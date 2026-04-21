@@ -24,6 +24,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
   DialogFooter,
   DialogTrigger,
 } from "@/components/ui/dialog";
@@ -219,6 +220,10 @@ export default function FleetRegistry() {
   const [bulkStatusPending, setBulkStatusPending] = useState(false);
   const [bulkRiderPending, setBulkRiderPending] = useState(false);
   const [bulkTransitPending, setBulkTransitPending] = useState(false);
+  const [bulkValuesOpen, setBulkValuesOpen] = useState(false);
+  const [bulkNbv, setBulkNbv] = useState("");
+  const [bulkOac, setBulkOac] = useState("");
+  const [bulkValuesPending, setBulkValuesPending] = useState(false);
   const { toast } = useToast();
 
   const { data: railcars, isLoading } = useQuery<Row[]>({
@@ -349,6 +354,28 @@ export default function FleetRegistry() {
       toast({ title: "Bulk transit update failed", description: e.message, variant: "destructive" });
     } finally {
       setBulkTransitPending(false);
+    }
+  };
+
+  const bulkUpdateValues = async () => {
+    if (!bulkNbv.trim() && !bulkOac.trim()) return;
+    setBulkValuesPending(true);
+    const ids = Array.from(selectedIds);
+    const payload: Record<string, number> = {};
+    if (bulkNbv.trim()) payload.nbv = parseFloat(bulkNbv);
+    if (bulkOac.trim()) payload.oac = parseFloat(bulkOac);
+    try {
+      await Promise.all(ids.map((id) => apiRequest("PATCH", `/api/railcars/${id}`, payload)));
+      queryClient.invalidateQueries({ queryKey: ["/api/railcars"] });
+      toast({ title: "Values updated", description: `NBV/OAC updated for ${ids.length} car${ids.length !== 1 ? "s" : ""}.` });
+      setBulkValuesOpen(false);
+      setBulkNbv("");
+      setBulkOac("");
+      clearSelection();
+    } catch (err: any) {
+      toast({ title: "Update failed", description: err.message, variant: "destructive" });
+    } finally {
+      setBulkValuesPending(false);
     }
   };
 
@@ -572,6 +599,15 @@ export default function FleetRegistry() {
                   ))}
                 </DropdownMenuContent>
               </DropdownMenu>
+              {/* Bulk NBV / OAC */}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => { setBulkNbv(""); setBulkOac(""); setBulkValuesOpen(true); }}
+                data-testid="bulk-values-btn"
+              >
+                Edit NBV / OAC
+              </Button>
             </div>
             <Button
               variant="ghost"
@@ -705,6 +741,52 @@ export default function FleetRegistry() {
       </div>
 
       {/* Slide-over */}
+      {/* Bulk NBV / OAC dialog */}
+      <Dialog open={bulkValuesOpen} onOpenChange={setBulkValuesOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Edit NBV / OAC</DialogTitle>
+            <DialogDescription>
+              Updating {selectedIds.size} car{selectedIds.size !== 1 ? "s" : ""}. Leave a field blank to keep existing values.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div>
+              <Label>NBV — Net Book Value</Label>
+              <Input
+                type="number"
+                min="0"
+                step="0.01"
+                placeholder="e.g. 42500.00 — leave blank to keep existing"
+                value={bulkNbv}
+                onChange={(e) => setBulkNbv(e.target.value)}
+                autoFocus
+              />
+            </div>
+            <div>
+              <Label>OAC — Original Acquired Cost</Label>
+              <Input
+                type="number"
+                min="0"
+                step="0.01"
+                placeholder="e.g. 55000.00 — leave blank to keep existing"
+                value={bulkOac}
+                onChange={(e) => setBulkOac(e.target.value)}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setBulkValuesOpen(false)}>Cancel</Button>
+            <Button
+              disabled={(!bulkNbv.trim() && !bulkOac.trim()) || bulkValuesPending}
+              onClick={bulkUpdateValues}
+            >
+              {bulkValuesPending ? `Saving…` : `Save to ${selectedIds.size} car${selectedIds.size !== 1 ? "s" : ""}`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Sheet open={!!openCarId} onOpenChange={(o) => !o && setOpenCarId(null)}>
         <SheetContent side="right" className="w-[480px] sm:max-w-[480px] overflow-y-auto">
           {openCar && <CarDetail carId={openCar.id} onEdit={() => setEditCar(openCar)} onDelete={() => deleteMutation.mutate(openCar.id)} canEdit={canEdit} />}
