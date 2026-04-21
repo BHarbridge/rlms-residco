@@ -54,6 +54,7 @@ import { cn } from "@/lib/utils";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { RailcarWithAssignment } from "@shared/schema";
+import AttachmentsPanel from "@/components/AttachmentsPanel";
 
 type Row = RailcarWithAssignment;
 
@@ -906,6 +907,11 @@ function CarDetail({
           <p className="text-sm whitespace-pre-wrap">{r.notes}</p>
         </div>
       )}
+
+      {/* Railcar-level attachments */}
+      <div className="mt-6 border-t border-border pt-5">
+        <AttachmentsPanel entityType="railcar" entityId={carId} compact />
+      </div>
 
       <RemarkChangeDialog
         open={remarkOpen}

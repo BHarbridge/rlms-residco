@@ -43,6 +43,7 @@ import {
 import { cn } from "@/lib/utils";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import AttachmentsPanel from "@/components/AttachmentsPanel";
 import type {
   MasterLeaseWithRiders,
   RailcarWithAssignment,
@@ -405,11 +406,18 @@ export default function LeaseManagement() {
                               <>
                                 <RiderCars riderId={rider.id} />
                                 <RiderContactsPanel riderId={rider.id} />
+                                <div className="px-5 py-4 border-t border-border/50">
+                                  <AttachmentsPanel entityType="rider" entityId={rider.id} compact />
+                                </div>
                               </>
                             )}
                           </div>
                         );
                       })}
+                    </div>
+                    {/* MLA-level attachments */}
+                    <div className="px-5 py-4 border-t border-border/50 bg-background/20">
+                      <AttachmentsPanel entityType="master_lease" entityId={lease.id} compact />
                     </div>
                   </div>
                 )}

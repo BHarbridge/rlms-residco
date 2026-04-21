@@ -1,5 +1,6 @@
 import type { Express, Request, Response } from "express";
 import type { Server } from "http";
+import multer from "multer";
 import { supabase, supabaseAdmin } from "./supabase";
 import {
   insertMasterLeaseSchema,
@@ -9,6 +10,14 @@ import {
   changeCarNumberSchema,
   moveCarsSchema,
 } from "@shared/schema";
+
+// Multer: store uploads in memory (files go straight to Supabase Storage)
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 52 * 1024 * 1024 }, // 50 MB
+});
+
+const STORAGE_BUCKET = "rlms-attachments";
 
 function errHandler(res: Response, err: unknown) {
   const msg = err instanceof Error ? err.message : String(err);
@@ -1166,6 +1175,127 @@ export async function registerRoutes(
       if (userId === adminId) return res.status(400).json({ error: "Cannot remove yourself" });
       const { error } = await supabase.from("user_roles").delete().eq("user_id", userId);
       if (error) throw error;
+      res.json({ ok: true });
+    } catch (err) { errHandler(res, err); }
+  });
+
+  // ── Attachments ────────────────────────────────────────────────────────────
+  // Files are stored in Supabase Storage bucket "rlms-attachments".
+  // Metadata is stored in the `attachments` table.
+  // entity_type: 'master_lease' | 'rider' | 'railcar'
+  // entity_id: the primary key of the linked record
+
+  // GET /api/attachments/:entityType/:entityId — list attachments for an entity
+  app.get("/api/attachments/:entityType/:entityId", async (req, res) => {
+    try {
+      const user = await getAuthUser(req, res);
+      if (!user) return;
+      const { entityType, entityId } = req.params;
+      const { data, error } = await supabase
+        .from("attachments")
+        .select("*")
+        .eq("entity_type", entityType)
+        .eq("entity_id", entityId)
+        .order("uploaded_at", { ascending: false });
+      if (error) throw error;
+      res.json(data);
+    } catch (err) { errHandler(res, err); }
+  });
+
+  // POST /api/attachments/:entityType/:entityId — upload a file
+  app.post("/api/attachments/:entityType/:entityId",
+    upload.single("file"),
+    async (req: Request & { file?: Express.Multer.File }, res: Response) => {
+      try {
+        const user = await getAuthUser(req, res);
+        if (!user) return;
+        if (!req.file) return res.status(400).json({ error: "No file provided" });
+        const { entityType, entityId } = req.params;
+        const validTypes = ["master_lease", "rider", "railcar"];
+        if (!validTypes.includes(entityType)) {
+          return res.status(400).json({ error: "Invalid entity type" });
+        }
+        const notes = (req.body as { notes?: string }).notes ?? null;
+        // Build a unique storage path: entityType/entityId/timestamp-filename
+        const ts = Date.now();
+        const safeName = req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_");
+        const storagePath = `${entityType}/${entityId}/${ts}-${safeName}`;
+        // Upload to Supabase Storage using admin client
+        const { error: uploadError } = await supabaseAdmin.storage
+          .from(STORAGE_BUCKET)
+          .upload(storagePath, req.file.buffer, {
+            contentType: req.file.mimetype,
+            upsert: false,
+          });
+        if (uploadError) throw uploadError;
+        // Save metadata to attachments table
+        const { data, error: dbError } = await supabase
+          .from("attachments")
+          .insert({
+            entity_type: entityType,
+            entity_id: parseInt(entityId, 10),
+            file_name: req.file.originalname,
+            file_size: req.file.size,
+            mime_type: req.file.mimetype,
+            storage_path: storagePath,
+            uploaded_by: user.email ?? user.id,
+            notes,
+          })
+          .select()
+          .single();
+        if (dbError) {
+          // Clean up orphaned file if DB insert fails
+          await supabaseAdmin.storage.from(STORAGE_BUCKET).remove([storagePath]);
+          throw dbError;
+        }
+        res.status(201).json(data);
+      } catch (err) { errHandler(res, err); }
+    }
+  );
+
+  // GET /api/attachments/:id/download — generate a signed download URL
+  app.get("/api/attachments/:id/download", async (req, res) => {
+    try {
+      const user = await getAuthUser(req, res);
+      if (!user) return;
+      const { id } = req.params;
+      const { data: att, error: fetchErr } = await supabase
+        .from("attachments")
+        .select("storage_path, file_name")
+        .eq("id", id)
+        .single();
+      if (fetchErr || !att) return res.status(404).json({ error: "Attachment not found" });
+      // Sign a URL valid for 60 minutes
+      const { data: signed, error: signErr } = await supabaseAdmin.storage
+        .from(STORAGE_BUCKET)
+        .createSignedUrl(att.storage_path, 3600, {
+          download: att.file_name,
+        });
+      if (signErr || !signed) throw signErr ?? new Error("Could not create signed URL");
+      res.json({ url: signed.signedUrl });
+    } catch (err) { errHandler(res, err); }
+  });
+
+  // DELETE /api/attachments/:id — delete an attachment (admin only)
+  app.delete("/api/attachments/:id", async (req, res) => {
+    try {
+      const adminId = await requireAdmin(req, res);
+      if (!adminId) return;
+      const { id } = req.params;
+      const { data: att, error: fetchErr } = await supabase
+        .from("attachments")
+        .select("storage_path")
+        .eq("id", id)
+        .single();
+      if (fetchErr || !att) return res.status(404).json({ error: "Attachment not found" });
+      // Remove from storage first
+      const { error: storageErr } = await supabaseAdmin.storage
+        .from(STORAGE_BUCKET)
+        .remove([att.storage_path]);
+      if (storageErr) throw storageErr;
+      // Remove metadata
+      const { error: dbErr } = await supabase.from("attachments").delete().eq("id", id);
+      if (dbErr) throw dbErr;
       res.json({ ok: true });
     } catch (err) { errHandler(res, err); }
   });

@@ -1,4 +1,5 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
+import { supabase } from "./supabase";
 
 // VITE_API_BASE is set at build time for the Render-hosted backend.
 // Falls back to __PORT_5000__ (replaced by deploy_website for proxy routing),
@@ -22,6 +23,9 @@ export async function apiRequest(
 ): Promise<Response> {
   const headers: Record<string, string> = { ...extraHeaders };
   if (data) headers["Content-Type"] = "application/json";
+  // Attach Supabase session token if available
+  const { data: { session } } = await supabase.auth.getSession();
+  if (session?.access_token) headers["Authorization"] = `Bearer ${session.access_token}`;
   const res = await fetch(`${API_BASE}${url}`, {
     method,
     headers,
