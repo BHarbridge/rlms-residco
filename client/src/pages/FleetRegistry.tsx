@@ -40,7 +40,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Search, Plus, Trash2, Pencil, ArrowUpDown, ChevronRight, Wrench, Hash, CheckSquare, Square, X as XIcon, ChevronDown } from "lucide-react";
+import { Search, Plus, Trash2, Pencil, ArrowUpDown, ChevronRight, Wrench, Hash, CheckSquare, Square, X as XIcon, ChevronDown, Download } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   DropdownMenu,
@@ -147,6 +147,48 @@ function StatusBadge({ status }: { status: string | null | undefined }) {
       {status}
     </span>
   );
+}
+
+function downloadRailcarsCsv(rows: RailcarWithAssignment[]) {
+  const headers = [
+    "Entity", "Car Number", "Reporting Marks", "Car Type", "Mechanical Designation",
+    "General Description", "Status", "Lease Type", "Managed Category",
+    "Transit Status", "Transit Label",
+    "Lessee", "Rider Name", "Schedule #", "MLA Lease #", "Lessor",
+    "Expiration Date", "Monthly Rent",
+  ];
+  const escape = (v: unknown) => {
+    const s = v == null ? "" : String(v);
+    return s.includes(",") || s.includes('"') || s.includes("\n") ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const rows_data = rows.map((r) => [
+    r.entity ?? "",
+    r.car_number,
+    r.reporting_marks ?? "",
+    r.car_type ?? "",
+    r.mechanical_designation ?? "",
+    r.general_description ?? "",
+    r.status ?? "",
+    r.lease_type ?? "",
+    r.managed_category ?? "",
+    r.transit_status ?? "",
+    r.transit_label ?? "",
+    r.assignment?.fleet_name ?? "",
+    r.assignment?.rider?.rider_name ?? "",
+    r.assignment?.rider?.schedule_number ?? "",
+    r.assignment?.rider?.master_lease?.lease_number ?? "",
+    r.assignment?.rider?.master_lease?.lessor ?? "",
+    r.assignment?.rider?.expiration_date ?? "",
+    r.assignment?.rider?.monthly_rent != null ? String(r.assignment.rider.monthly_rent) : "",
+  ].map(escape).join(","));
+  const csv = [headers.map(escape).join(","), ...rows_data].join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `railcars-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 export default function FleetRegistry() {
@@ -352,16 +394,28 @@ export default function FleetRegistry() {
         title="Fleet Registry"
         subtitle="All railcars under management, current assignments, and lease status"
         actions={
-          canEdit ? (
+          <div className="flex gap-2">
             <Button
               size="sm"
-              onClick={() => setAddOpen(true)}
-              data-testid="button-add-railcar"
+              variant="outline"
+              onClick={() => downloadRailcarsCsv(filtered)}
+              disabled={!railcars || filtered.length === 0}
+              data-testid="button-export-railcars"
             >
-              <Plus className="h-4 w-4" />
-              Add Railcar
+              <Download className="h-4 w-4" />
+              Export
             </Button>
-          ) : undefined
+            {canEdit && (
+              <Button
+                size="sm"
+                onClick={() => setAddOpen(true)}
+                data-testid="button-add-railcar"
+              >
+                <Plus className="h-4 w-4" />
+                Add Railcar
+              </Button>
+            )}
+          </div>
         }
       />
 
