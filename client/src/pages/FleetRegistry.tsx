@@ -157,7 +157,7 @@ function downloadRailcarsCsv(rows: RailcarWithAssignment[]) {
     "Transit Status", "Transit Label",
     "Lessee", "Rider Name", "Schedule #", "MLA Lease #", "Lessor",
     "Expiration Date", "Monthly Rent",
-    "NBV", "OAC",
+    "NBV", "OAC", "OEC",
   ];
   const escape = (v: unknown) => {
     const s = v == null ? "" : String(v);
@@ -184,6 +184,7 @@ function downloadRailcarsCsv(rows: RailcarWithAssignment[]) {
     r.assignment?.rider?.monthly_rent != null ? String(r.assignment.rider.monthly_rent) : "",
     (r as any).nbv != null ? String((r as any).nbv) : "",
     (r as any).oac != null ? String((r as any).oac) : "",
+    (r as any).oec != null ? String((r as any).oec) : "",
   ].map(escape).join(","));
   const csv = [headers.map(escape).join(","), ...rows_data].join("\n");
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
@@ -223,6 +224,7 @@ export default function FleetRegistry() {
   const [bulkValuesOpen, setBulkValuesOpen] = useState(false);
   const [bulkNbv, setBulkNbv] = useState("");
   const [bulkOac, setBulkOac] = useState("");
+  const [bulkOec, setBulkOec] = useState("");
   const [bulkValuesPending, setBulkValuesPending] = useState(false);
   const { toast } = useToast();
 
@@ -358,12 +360,13 @@ export default function FleetRegistry() {
   };
 
   const bulkUpdateValues = async () => {
-    if (!bulkNbv.trim() && !bulkOac.trim()) return;
+    if (!bulkNbv.trim() && !bulkOac.trim() && !bulkOec.trim()) return;
     setBulkValuesPending(true);
     const ids = Array.from(selectedIds);
     const payload: Record<string, number> = {};
     if (bulkNbv.trim()) payload.nbv = parseFloat(bulkNbv);
     if (bulkOac.trim()) payload.oac = parseFloat(bulkOac);
+    if (bulkOec.trim()) payload.oec = parseFloat(bulkOec);
     try {
       await Promise.all(ids.map((id) => apiRequest("PATCH", `/api/railcars/${id}`, payload)));
       queryClient.invalidateQueries({ queryKey: ["/api/railcars"] });
@@ -371,6 +374,7 @@ export default function FleetRegistry() {
       setBulkValuesOpen(false);
       setBulkNbv("");
       setBulkOac("");
+      setBulkOec("");
       clearSelection();
     } catch (err: any) {
       toast({ title: "Update failed", description: err.message, variant: "destructive" });
@@ -603,10 +607,10 @@ export default function FleetRegistry() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => { setBulkNbv(""); setBulkOac(""); setBulkValuesOpen(true); }}
+                onClick={() => { setBulkNbv(""); setBulkOac(""); setBulkOec(""); setBulkValuesOpen(true); }}
                 data-testid="bulk-values-btn"
               >
-                Edit NBV / OAC
+                Edit NBV / OAC / OEC
               </Button>
             </div>
             <Button
@@ -745,9 +749,9 @@ export default function FleetRegistry() {
       <Dialog open={bulkValuesOpen} onOpenChange={setBulkValuesOpen}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
-            <DialogTitle>Edit NBV / OAC</DialogTitle>
+            <DialogTitle>Edit NBV / OAC / OEC</DialogTitle>
             <DialogDescription>
-              Updating {selectedIds.size} car{selectedIds.size !== 1 ? "s" : ""}. Leave a field blank to keep existing values.
+              Updating {selectedIds.size} car{selectedIds.size !== 1 ? "s" : ""}. Leave any field blank to keep existing values.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
@@ -774,11 +778,22 @@ export default function FleetRegistry() {
                 onChange={(e) => setBulkOac(e.target.value)}
               />
             </div>
+            <div>
+              <Label>OEC — Original Est. Build Cost</Label>
+              <Input
+                type="number"
+                min="0"
+                step="0.01"
+                placeholder="e.g. 48000.00 — leave blank to keep existing"
+                value={bulkOec}
+                onChange={(e) => setBulkOec(e.target.value)}
+              />
+            </div>
           </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setBulkValuesOpen(false)}>Cancel</Button>
             <Button
-              disabled={(!bulkNbv.trim() && !bulkOac.trim()) || bulkValuesPending}
+              disabled={(!bulkNbv.trim() && !bulkOac.trim() && !bulkOec.trim()) || bulkValuesPending}
               onClick={bulkUpdateValues}
             >
               {bulkValuesPending ? `Saving…` : `Save to ${selectedIds.size} car${selectedIds.size !== 1 ? "s" : ""}`}
@@ -1064,6 +1079,7 @@ function CarDetail({
         <DetailRow label="Managed Category" value={(r as any).managed_category ?? "—"} />
         <DetailRow label="NBV" value={(r as any).nbv != null ? `$${Number((r as any).nbv).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"} />
         <DetailRow label="OAC" value={(r as any).oac != null ? `$${Number((r as any).oac).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"} />
+        <DetailRow label="OEC" value={(r as any).oec != null ? `$${Number((r as any).oec).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"} />
       </dl>
 
       {/* Prior reporting marks */}
@@ -1518,6 +1534,7 @@ function RailcarFormDialog({
     notes: car?.notes ?? "",
     nbv: (car as any)?.nbv != null ? String((car as any).nbv) : "",
     oac: (car as any)?.oac != null ? String((car as any).oac) : "",
+    oec: (car as any)?.oec != null ? String((car as any).oec) : "",
   }));
 
   // Assignment fields — only used when car is null (new car mode)
@@ -1686,7 +1703,7 @@ function RailcarFormDialog({
             <Label>Managed Category</Label>
             <Input value={form.managed_category} onChange={(e) => setForm({ ...form, managed_category: e.target.value })} placeholder="e.g. Net Lease, ALF Marks" />
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-3 gap-3">
             <div>
               <Label>NBV <span className="text-muted-foreground font-normal text-xs">(Net Book Value)</span></Label>
               <Input
@@ -1707,6 +1724,17 @@ function RailcarFormDialog({
                 value={form.oac}
                 onChange={(e) => setForm({ ...form, oac: e.target.value })}
                 placeholder="e.g. 55000.00"
+              />
+            </div>
+            <div>
+              <Label>OEC <span className="text-muted-foreground font-normal text-xs">(Original Est. Build Cost)</span></Label>
+              <Input
+                type="number"
+                min="0"
+                step="0.01"
+                value={form.oec}
+                onChange={(e) => setForm({ ...form, oec: e.target.value })}
+                placeholder="e.g. 48000.00"
               />
             </div>
           </div>
@@ -1860,6 +1888,7 @@ function useMemoReset(
         active: (car as any)?.active ?? true,
         nbv: (car as any)?.nbv != null ? String((car as any).nbv) : "",
         oac: (car as any)?.oac != null ? String((car as any).oac) : "",
+        oec: (car as any)?.oec != null ? String((car as any).oec) : "",
       });
     }
   }, [open, car, setForm]);
