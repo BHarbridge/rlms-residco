@@ -54,7 +54,10 @@ function Step({
 
 export default function MoveCars() {
   const canEdit = useCanEdit();
-  const [fromRiderId, setFromRiderId] = useState<string>("");
+  const initRider = typeof window !== "undefined"
+    ? new URLSearchParams(window.location.search).get("rider") ?? ""
+    : "";
+  const [fromRiderId, setFromRiderId] = useState<string>(initRider);
   const [toRiderId, setToRiderId] = useState<string>("");
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [newFleetName, setNewFleetName] = useState("");

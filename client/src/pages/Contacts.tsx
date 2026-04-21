@@ -1,10 +1,19 @@
 import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useLocation } from "wouter";
 import PageHeader from "@/components/PageHeader";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Search, Phone, Mail, User, StickyNote, Building2, FileText } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Search, Phone, Mail, User, StickyNote, Building2, FileText, Zap, ArrowRightLeft, ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type Contact = {
@@ -27,7 +36,7 @@ type Contact = {
   } | null;
 };
 
-function ContactCard({ contact }: { contact: Contact }) {
+function ContactCard({ contact, onNavigate }: { contact: Contact; onNavigate: (path: string) => void }) {
   const [expanded, setExpanded] = useState(false);
   const lessee = contact.rider?.master_lease?.lessee ?? null;
   const leaseNumber = contact.rider?.master_lease?.lease_number ?? null;
@@ -42,7 +51,38 @@ function ContactCard({ contact }: { contact: Contact }) {
         <div className="h-8 w-8 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0 mt-0.5">
           <User className="h-4 w-4 text-primary" />
         </div>
-        <div className="flex-1 min-w-0">
+        <div className="flex-1 min-w-0">        {/* Quick Actions */}
+          {contact.rider && (
+            <div className="float-right ml-2" onClick={(e) => e.stopPropagation()}>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button size="sm" variant="ghost" className="h-6 px-2 text-xs gap-1 text-muted-foreground hover:text-foreground">
+                    <Zap className="h-3 w-3" />
+                    Quick Actions
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-52">
+                  <DropdownMenuItem
+                    onSelect={() => onNavigate(`/leases?rider=${contact.rider_id}`)}
+                    className="gap-2"
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" />
+                    Open Lease Detail
+                    {leaseNumber && <span className="ml-auto text-xs text-muted-foreground font-mono">{leaseNumber}</span>}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    onSelect={() => onNavigate(`/move?rider=${contact.rider_id}`)}
+                    className="gap-2"
+                  >
+                    <ArrowRightLeft className="h-3.5 w-3.5" />
+                    Move Cars
+                    {riderName && <span className="ml-auto text-xs text-muted-foreground truncate max-w-[80px]">{riderName}</span>}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          )}
           <div className="flex items-center gap-2 flex-wrap">
             <span className="font-medium text-sm">{contact.name}</span>
             {contact.title && (
@@ -116,6 +156,7 @@ function ContactCard({ contact }: { contact: Contact }) {
 }
 
 export default function Contacts() {
+  const [, navigate] = useLocation();
   const [search, setSearch] = useState("");
 
   const { data: contacts, isLoading } = useQuery<Contact[]>({
@@ -204,7 +245,7 @@ export default function Contacts() {
             </div>
             <div className="space-y-2">
               {items.map((c) => (
-                <ContactCard key={c.id} contact={c} />
+                <ContactCard key={c.id} contact={c} onNavigate={navigate} />
               ))}
             </div>
           </div>
