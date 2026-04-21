@@ -66,6 +66,7 @@ type DashboardData = {
     unassigned_cars: number;
     expiring_12mo: number;
     expiring_6mo: number;
+    off_rent_count: number;
     riders_count: number;
     utilization_pct: number;
     rps_total: number;
@@ -502,7 +503,7 @@ export default function Dashboard() {
 
       <div className="px-8 py-7 space-y-7">
         {/* KPIs */}
-<div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-7 gap-3">
+<div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-3">
           {isLoading ? (
             Array.from({ length: 6 }).map((_, i) => (
               <Skeleton key={i} className="h-[110px] rounded-lg" />
@@ -553,6 +554,14 @@ export default function Dashboard() {
                   </div>
                 </div>
               </button>
+              <KpiCard
+                testId="kpi-off-rent"
+                label="Off Rent"
+                value={data.kpis.off_rent_count}
+                icon={AlertTriangle}
+                accent="error"
+                onClick={() => navigate("/fleet?filter=offrent")}
+              />
               <KpiCard
                 testId="kpi-expiring6"
                 label="Expiring <6mo"

@@ -193,9 +193,9 @@ function downloadRailcarsCsv(rows: RailcarWithAssignment[]) {
 
 export default function FleetRegistry() {
   const canEdit = useCanEdit();
-  // Deep-link: ?filter=unassigned | assigned | all
+  // Deep-link: ?filter=unassigned | assigned | offrent | all
   const initAssigned = typeof window !== "undefined"
-    ? (() => { const f = new URLSearchParams(window.location.search).get("filter"); return f === "unassigned" ? "unassigned" : f === "assigned" ? "assigned" : "all"; })()
+    ? (() => { const f = new URLSearchParams(window.location.search).get("filter"); return f === "unassigned" ? "unassigned" : f === "assigned" ? "assigned" : f === "offrent" ? "offrent" : "all"; })()
     : "all";
 
   const [search, setSearch] = useState("");
@@ -222,6 +222,15 @@ export default function FleetRegistry() {
     queryKey: ["/api/railcars"],
   });
   const { data: riders } = useQuery<any[]>({ queryKey: ["/api/riders"] });
+  const { data: rentEvents } = useQuery<any[]>({ queryKey: ["/api/rent-events"] });
+  // Derive set of car IDs currently off-rent (most recent event per car is off_rent)
+  const offRentCarIds = useMemo(() => {
+    const seen = new Map<number, string>();
+    for (const ev of (rentEvents ?? []).slice().sort((a: any, b: any) => b.event_date.localeCompare(a.event_date))) {
+      if (!seen.has(ev.car_id)) seen.set(ev.car_id, ev.event_type);
+    }
+    return new Set<number>(Array.from(seen.entries()).filter(([, t]) => t === "off_rent").map(([id]) => id));
+  }, [rentEvents]);
 
   const filtered = useMemo(() => {
     let rows = railcars ?? [];
@@ -240,6 +249,7 @@ export default function FleetRegistry() {
     if (entityFilter !== "all") rows = rows.filter((r) => (r as any).entity === entityFilter);
     if (assignedFilter === "unassigned") rows = rows.filter((r) => !r.assignment);
     if (assignedFilter === "assigned") rows = rows.filter((r) => !!r.assignment);
+    if (assignedFilter === "offrent") rows = rows.filter((r) => offRentCarIds.has(r.id));
     if (riderFilter !== "all")
       rows = rows.filter((r) => String(r.assignment?.rider_id ?? "") === riderFilter);
 
@@ -484,6 +494,7 @@ export default function FleetRegistry() {
               <SelectItem value="all">All cars</SelectItem>
               <SelectItem value="assigned">Assigned only</SelectItem>
               <SelectItem value="unassigned">Unassigned only</SelectItem>
+              <SelectItem value="offrent">Off Rent</SelectItem>
             </SelectContent>
           </Select>
           <div className="text-xs text-muted-foreground ml-auto font-mono-num">
@@ -740,6 +751,31 @@ function Th({
   );
 }
 
+function downloadRentEventsCsv(events: any[], carNumber: string) {
+  const headers = ["Car Number", "Entity", "Event Type", "Event Date", "Reason", "Logged By", "Logged At"];
+  const escape = (v: unknown) => {
+    const s = v == null ? "" : String(v);
+    return s.includes(",") || s.includes('"') || s.includes("\n") ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const rows = events.map((e) => [
+    carNumber,
+    e.railcar?.entity ?? "",
+    e.event_type === "off_rent" ? "Off Rent" : "On Rent",
+    e.event_date,
+    e.reason,
+    e.created_by,
+    new Date(e.created_at).toLocaleString(),
+  ].map(escape).join(","));
+  const csv = [headers.map(escape).join(","), ...rows].join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `rent-events-${carNumber}-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 function CarDetail({
   carId,
   onEdit,
@@ -753,6 +789,10 @@ function CarDetail({
 }) {
   const { toast } = useToast();
   const [remarkOpen, setRemarkOpen] = useState(false);
+  const [rentFormOpen, setRentFormOpen] = useState(false);
+  const [rentEventType, setRentEventType] = useState<"off_rent" | "on_rent">("off_rent");
+  const [rentEventDate, setRentEventDate] = useState(new Date().toISOString().slice(0, 10));
+  const [rentReason, setRentReason] = useState("");
   // Assign / reassign state
   const [assignOpen, setAssignOpen] = useState(false);
   const [assignRiderId, setAssignRiderId] = useState("");
@@ -769,6 +809,38 @@ function CarDetail({
   // Riders list for the assign dropdown (cached from parent's query)
   const { data: ridersData } = useQuery<any[]>({ queryKey: ["/api/riders"] });
   const allRiders: any[] = ridersData ?? [];
+
+  // Rent events for this car
+  const { data: rentEventsData, isLoading: rentLoading } = useQuery<any[]>({
+    queryKey: ["/api/rent-events/car", carId],
+    queryFn: () => apiRequest("GET", `/api/rent-events/car/${carId}`).then((r) => r.json()),
+  });
+  const rentEvents: any[] = rentEventsData ?? [];
+  const currentRentStatus: "off_rent" | "on_rent" | null =
+    rentEvents.length > 0 ? rentEvents[0].event_type : null;
+
+  const rentMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/rent-events", {
+        car_id: carId,
+        event_type: rentEventType,
+        event_date: rentEventDate,
+        reason: rentReason.trim(),
+      });
+      if (!res.ok) throw new Error(await res.text());
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/rent-events/car", carId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/rent-events"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/dashboard"] });
+      toast({ title: "Rent event logged", description: "Rental status updated successfully." });
+      setRentFormOpen(false);
+      setRentReason("");
+    },
+    onError: (err: any) => {
+      toast({ title: "Failed to log event", description: err.message, variant: "destructive" });
+    },
+  });
 
   const assignMutation = useMutation({
     mutationFn: async () => {
@@ -1090,6 +1162,139 @@ function CarDetail({
           </div>
         </div>
       )}
+
+      {/* ── Rental Abatement / Rent Status ── */}
+      <div className="mt-6 border-t border-border pt-5">
+        <div className="flex items-center justify-between mb-3">
+          <div className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
+            Rental Status
+          </div>
+          <div className="flex items-center gap-2">
+            {rentEvents.length > 0 && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-6 px-2 text-xs"
+                onClick={() => downloadRentEventsCsv(rentEvents, r.car_number)}
+              >
+                <Download className="h-3 w-3 mr-1" />Export
+              </Button>
+            )}
+            {canEdit && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-6 px-2 text-xs"
+                onClick={() => {
+                  setRentEventDate(new Date().toISOString().slice(0, 10));
+                  setRentEventType(currentRentStatus === "off_rent" ? "on_rent" : "off_rent");
+                  setRentReason("");
+                  setRentFormOpen(true);
+                }}
+              >
+                Log Event
+              </Button>
+            )}
+          </div>
+        </div>
+
+        {/* Current status badge */}
+        <div className="flex items-center gap-2 mb-3">
+          {currentRentStatus === null && (
+            <span className="text-sm text-muted-foreground italic">No rent events recorded</span>
+          )}
+          {currentRentStatus === "on_rent" && (
+            <span className="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full bg-[hsl(var(--success))]/15 text-[hsl(var(--success))] border border-[hsl(var(--success))]/30">
+              <span className="h-1.5 w-1.5 rounded-full bg-[hsl(var(--success))]" />
+              On Rent — as of {rentEvents[0]?.event_date}
+            </span>
+          )}
+          {currentRentStatus === "off_rent" && (
+            <span className="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full bg-[hsl(var(--error))]/15 text-[hsl(var(--error))] border border-[hsl(var(--error))]/30">
+              <span className="h-1.5 w-1.5 rounded-full bg-[hsl(var(--error))]" />
+              Off Rent — since {rentEvents[0]?.event_date}
+            </span>
+          )}
+        </div>
+
+        {/* Log event form */}
+        {rentFormOpen && (
+          <div className="rounded-md border border-primary/30 bg-primary/5 p-4 space-y-3 mb-3">
+            <div className="text-[10px] uppercase tracking-[0.2em] text-primary">Log Rent Event</div>
+            <div>
+              <Label className="text-xs">Event Type</Label>
+              <Select value={rentEventType} onValueChange={(v) => setRentEventType(v as any)}>
+                <SelectTrigger className="h-8 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="off_rent">Off Rent (abatement begins)</SelectItem>
+                  <SelectItem value="on_rent">On Rent (abatement ends)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-xs">Effective Date</Label>
+              <Input
+                type="date"
+                className="h-8 text-xs"
+                value={rentEventDate}
+                onChange={(e) => setRentEventDate(e.target.value)}
+              />
+            </div>
+            <div>
+              <Label className="text-xs">Reason <span className="text-[hsl(var(--error))] text-xs">*</span></Label>
+              <Input
+                className="h-8 text-xs"
+                value={rentReason}
+                onChange={(e) => setRentReason(e.target.value)}
+                placeholder="e.g. Bad order — sent to shop 4/21/26"
+              />
+            </div>
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                disabled={!rentReason.trim() || !rentEventDate || rentMutation.isPending}
+                onClick={() => rentMutation.mutate()}
+              >
+                {rentMutation.isPending ? "Saving…" : "Save"}
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setRentFormOpen(false)}>Cancel</Button>
+            </div>
+          </div>
+        )}
+
+        {/* History table */}
+        {rentLoading ? (
+          <Skeleton className="h-16 w-full" />
+        ) : rentEvents.length > 0 ? (
+          <div className="space-y-2">
+            {rentEvents.map((ev: any) => (
+              <div
+                key={ev.id}
+                className={`text-xs border-l-2 pl-3 py-1 ${
+                  ev.event_type === "off_rent"
+                    ? "border-[hsl(var(--error))]/60"
+                    : "border-[hsl(var(--success))]/60"
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <span className={`font-medium ${
+                    ev.event_type === "off_rent"
+                      ? "text-[hsl(var(--error))]"
+                      : "text-[hsl(var(--success))]"
+                  }`}>
+                    {ev.event_type === "off_rent" ? "Off Rent" : "On Rent"}
+                  </span>
+                  <span className="text-muted-foreground font-mono-num">{ev.event_date}</span>
+                </div>
+                <div className="mt-0.5 text-muted-foreground italic">{ev.reason}</div>
+                <div className="mt-0.5 text-muted-foreground/60">{ev.created_by}</div>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
 
       {r.notes && (
         <div className="mt-6 border-t border-border pt-5">

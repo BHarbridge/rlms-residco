@@ -180,6 +180,19 @@ export async function registerRoutes(
       const rpsUtil   = rpsCars.length   > 0 ? Math.round((rpsAssigned   / rpsCars.length)   * 1000) / 10 : 0;
       const ownedUtil = ownedCars.length > 0 ? Math.round((ownedAssigned / ownedCars.length) * 1000) / 10 : 0;
 
+      // Off-rent count — cars whose most recent rent_event is 'off_rent'
+      const { data: rentEvents } = await supabase
+        .from("rent_events")
+        .select("car_id, event_type, event_date")
+        .order("event_date", { ascending: false });
+      const latestRentByCarId = new Map<number, string>();
+      for (const ev of (rentEvents ?? []) as any[]) {
+        if (!latestRentByCarId.has(ev.car_id)) {
+          latestRentByCarId.set(ev.car_id, ev.event_type);
+        }
+      }
+      const offRentCount = Array.from(latestRentByCarId.values()).filter((t) => t === "off_rent").length;
+
       const now = new Date();
       const twelveMo = new Date(now);
       twelveMo.setMonth(twelveMo.getMonth() + 12);
@@ -292,6 +305,7 @@ export async function registerRoutes(
           unassigned_cars: unassignedCars,
           expiring_12mo: expiring12mo,
           expiring_6mo: expiring6mo,
+          off_rent_count: offRentCount,
           riders_count: riders.length,
           utilization_pct: utilization,
           rps_total: rpsCars.length,
@@ -1368,6 +1382,62 @@ export async function registerRoutes(
       const { error: dbErr } = await supabase.from("attachments").delete().eq("id", id);
       if (dbErr) throw dbErr;
       res.json({ ok: true });
+    } catch (err) { errHandler(res, err); }
+  });
+
+  // ── Rent Events ──────────────────────────────────────────────────────────
+
+  // GET /api/rent-events — all events (for dashboard/export)
+  app.get("/api/rent-events", async (_req, res) => {
+    try {
+      const { data, error } = await supabase
+        .from("rent_events")
+        .select("*, railcar:railcars(car_number, entity)")
+        .order("event_date", { ascending: false });
+      if (error) throw error;
+      res.json(data ?? []);
+    } catch (err) { errHandler(res, err); }
+  });
+
+  // GET /api/rent-events/car/:carId — events for one car
+  app.get("/api/rent-events/car/:carId", async (req, res) => {
+    try {
+      const { data, error } = await supabase
+        .from("rent_events")
+        .select("*")
+        .eq("car_id", Number(req.params.carId))
+        .order("event_date", { ascending: false });
+      if (error) throw error;
+      res.json(data ?? []);
+    } catch (err) { errHandler(res, err); }
+  });
+
+  // POST /api/rent-events — log a new rent event
+  app.post("/api/rent-events", async (req, res) => {
+    try {
+      const userId = await requireUser(req, res);
+      if (!userId) return;
+      const { car_id, event_type, event_date, reason } = req.body;
+      if (!car_id || !event_type || !event_date || !reason) {
+        return res.status(400).json({ error: "car_id, event_type, event_date, and reason are required" });
+      }
+      if (!["on_rent", "off_rent"].includes(event_type)) {
+        return res.status(400).json({ error: "event_type must be on_rent or off_rent" });
+      }
+      // Get user email for created_by
+      const { data: userRow } = await supabase
+        .from("user_roles")
+        .select("email")
+        .eq("user_id", userId)
+        .single();
+      const created_by = userRow?.email ?? userId;
+      const { data, error } = await supabase
+        .from("rent_events")
+        .insert({ car_id: Number(car_id), event_type, event_date, reason: reason.trim(), created_by })
+        .select()
+        .single();
+      if (error) throw error;
+      res.json(data);
     } catch (err) { errHandler(res, err); }
   });
 
