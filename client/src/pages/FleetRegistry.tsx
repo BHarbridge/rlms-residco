@@ -151,9 +151,9 @@ function StatusBadge({ status }: { status: string | null | undefined }) {
 
 export default function FleetRegistry() {
   const canEdit = useCanEdit();
-  // Deep-link: ?filter=unassigned pre-filters to cars with no assignment
+  // Deep-link: ?filter=unassigned | assigned | all
   const initAssigned = typeof window !== "undefined"
-    ? new URLSearchParams(window.location.search).get("filter") === "unassigned" ? "unassigned" : "all"
+    ? (() => { const f = new URLSearchParams(window.location.search).get("filter"); return f === "unassigned" ? "unassigned" : f === "assigned" ? "assigned" : "all"; })()
     : "all";
 
   const [search, setSearch] = useState("");

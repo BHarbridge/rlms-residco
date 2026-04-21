@@ -515,14 +515,14 @@ export default function Dashboard() {
                 value={data.kpis.total_fleet}
                 icon={Train}
                 accent="primary"
-                onClick={() => setDrillKey("total_fleet")}
+                onClick={() => navigate("/fleet?filter=all")}
               />
               <KpiCard
                 testId="kpi-active-assignments"
                 label="Active Assignments"
                 value={data.kpis.active_assignments}
                 icon={LinkIcon}
-                onClick={() => setDrillKey("active_assignments")}
+                onClick={() => navigate("/fleet?filter=assigned")}
               />
               <KpiCard
                 testId="kpi-unassigned"
