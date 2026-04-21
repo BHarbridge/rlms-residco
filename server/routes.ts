@@ -1151,29 +1151,61 @@ export async function registerRoutes(
     } catch (err) { errHandler(res, err); }
   });
 
-  // POST /api/admin/users/invite — invite a new user (admin only)
+  // POST /api/admin/users/invite — invite a new user OR resend invite to existing (admin only)
   app.post("/api/admin/users/invite", async (req, res) => {
     try {
       const adminId = await requireAdmin(req, res);
       if (!adminId) return;
       const { email, role } = req.body as { email: string; role: "admin" | "viewer" };
       if (!email || !role) return res.status(400).json({ error: "email and role required" });
-      // Use Supabase Admin API to invite user (sends email with magic link)
-      // redirectTo must point to the live app so the invite link lands correctly
       const appUrl = process.env.VITE_API_BASE ?? "https://rlms-residco.onrender.com";
+
+      // Try the standard invite first
       const { data: inviteData, error: inviteErr } = await supabaseAdmin.auth.admin.inviteUserByEmail(email, {
         redirectTo: appUrl,
       });
+
+      // If user already exists in auth, fall back to generateLink (resend)
       if (inviteErr) {
-        return res.status(400).json({ error: `Invite failed: ${inviteErr.message}` });
+        const isAlreadyRegistered =
+          inviteErr.message.toLowerCase().includes("already registered") ||
+          inviteErr.message.toLowerCase().includes("already been invited") ||
+          inviteErr.message.toLowerCase().includes("user already exists") ||
+          inviteErr.status === 422;
+
+        if (!isAlreadyRegistered) {
+          return res.status(400).json({ error: `Invite failed: ${inviteErr.message}` });
+        }
+
+        // User already exists — generate a fresh magic link and email it
+        const { data: linkData, error: linkErr } = await supabaseAdmin.auth.admin.generateLink({
+          type: "magiclink",
+          email,
+          options: { redirectTo: appUrl },
+        });
+        if (linkErr) {
+          return res.status(400).json({ error: `Resend failed: ${linkErr.message}` });
+        }
+        // Make sure they have a role record (they may have been invited before the role was saved)
+        const { data: existingRole } = await supabase
+          .from("user_roles").select("user_id").eq("email", email).maybeSingle();
+        if (!existingRole) {
+          const userId = linkData.user?.id;
+          if (userId) {
+            await supabase.from("user_roles")
+              .upsert({ user_id: userId, role, email }, { onConflict: "user_id" });
+          }
+        }
+        return res.json({ id: linkData.user?.id, email, role, resent: true });
       }
+
       const userId = inviteData.user?.id;
       if (!userId) return res.status(500).json({ error: "User ID missing after invite" });
       // Upsert role + store email for display
       const { error: roleErr } = await supabase.from("user_roles")
         .upsert({ user_id: userId, role, email }, { onConflict: "user_id" });
       if (roleErr) throw roleErr;
-      res.json({ id: userId, email, role });
+      res.json({ id: userId, email, role, resent: false });
     } catch (err) { errHandler(res, err); }
   });
 

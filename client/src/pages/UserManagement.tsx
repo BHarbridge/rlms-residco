@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { UserPlus, Trash2, ShieldCheck, Eye } from "lucide-react";
+import { UserPlus, Trash2, ShieldCheck, Eye, MailIcon } from "lucide-react";
 
 interface AppUser {
   id: string;
@@ -33,6 +33,7 @@ export default function UserManagement() {
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState<"admin" | "viewer">("viewer");
   const [inviting, setInviting] = useState(false);
+  const [resending, setResending] = useState<string | null>(null); // email being resent
 
   const authHeaders = { Authorization: `Bearer ${session?.access_token}` };
 
@@ -76,13 +77,39 @@ export default function UserManagement() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Failed to invite");
-      toast({ title: "Invitation sent", description: `${inviteEmail} will receive a login email.` });
+      toast({
+        title: data.resent ? "Invite resent" : "Invitation sent",
+        description: data.resent
+          ? `A fresh login link has been sent to ${inviteEmail}.`
+          : `${inviteEmail} will receive a login email.`,
+      });
       setInviteEmail("");
       queryClient.invalidateQueries({ queryKey: ["/api/admin/users"] });
     } catch (err: any) {
       toast({ title: "Invite failed", description: err.message, variant: "destructive" });
     } finally {
       setInviting(false);
+    }
+  }
+
+  async function handleResend(email: string, role: "admin" | "viewer") {
+    setResending(email);
+    try {
+      const res = await fetch("/api/admin/users/invite", {
+        method: "POST",
+        headers: { ...authHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ email, role }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Resend failed");
+      toast({
+        title: "Invite resent",
+        description: `A fresh login link has been sent to ${email}.`,
+      });
+    } catch (err: any) {
+      toast({ title: "Resend failed", description: err.message, variant: "destructive" });
+    } finally {
+      setResending(null);
     }
   }
 
@@ -101,7 +128,7 @@ export default function UserManagement() {
             Invite a team member
           </h2>
           <p className="text-xs text-muted-foreground mb-4">
-            They'll receive an email with a link to set their password and sign in.
+            They’ll receive an email with a login link. If they were already invited, a fresh link will be resent automatically.
           </p>
           <form onSubmit={handleInvite} className="space-y-3">
             <div className="flex gap-2">
@@ -156,7 +183,7 @@ export default function UserManagement() {
                   <th className="px-4 py-3 text-left text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Email</th>
                   <th className="px-4 py-3 text-left text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Role</th>
                   <th className="px-4 py-3 text-left text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Joined</th>
-                  <th className="w-10" />
+                  <th className="w-24" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -189,14 +216,27 @@ export default function UserManagement() {
                       {new Date(u.created_at).toLocaleDateString()}
                     </td>
                     <td className="px-4 py-3">
-                      <button
-                        onClick={() => removeUser.mutate(u.id)}
-                        className="text-muted-foreground hover:text-destructive transition-colors"
-                        data-testid={`button-remove-user-${u.id}`}
-                        title="Remove user"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
+                      <div className="flex items-center gap-2 justify-end">
+                        <button
+                          onClick={() => handleResend(u.email, u.role)}
+                          disabled={resending === u.email}
+                          className="text-muted-foreground hover:text-primary transition-colors disabled:opacity-40"
+                          data-testid={`button-resend-invite-${u.id}`}
+                          title="Resend invite link"
+                        >
+                          {resending === u.email
+                            ? <span className="text-[10px]">Sending…</span>
+                            : <MailIcon className="h-4 w-4" />}
+                        </button>
+                        <button
+                          onClick={() => removeUser.mutate(u.id)}
+                          className="text-muted-foreground hover:text-destructive transition-colors"
+                          data-testid={`button-remove-user-${u.id}`}
+                          title="Remove user"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
