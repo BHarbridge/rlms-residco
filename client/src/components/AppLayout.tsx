@@ -1,6 +1,7 @@
-import { Link, useLocation, useLocation as useWouterLocation } from "wouter";
+import { Link, useLocation } from "wouter";
 import residcoGlobePath from "@assets/residco-globe.svg";
-import { ReactNode, useState, useEffect, useRef, useCallback } from "react";
+import { ReactNode, useState, useEffect } from "react";
+import GlobalSearch from "@/components/GlobalSearch";
 import {
   LayoutDashboard,
   Train,
@@ -83,56 +84,7 @@ function Logo({ collapsed }: { collapsed: boolean }) {
   );
 }
 
-function GlobalSearchBar() {
-  const [, navigate] = useWouterLocation();
-  const [location] = useLocation();
-  const [value, setValue] = useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
-  const isSearchPage = location.startsWith("/search");
-
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
-        e.preventDefault();
-        inputRef.current?.focus();
-        inputRef.current?.select();
-      }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, []);
-
-  const commit = useCallback(
-    (q: string) => {
-      const trimmed = q.trim();
-      if (!trimmed) return;
-      navigate(`/search?q=${encodeURIComponent(trimmed)}`);
-    },
-    [navigate]
-  );
-
-  return (
-    <div className="relative flex-1 max-w-md">
-      <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
-      <input
-        ref={inputRef}
-        type="text"
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") commit(value);
-        }}
-        placeholder="Search cars, lessees, riders…"
-        className="w-full bg-sidebar-accent/40 border border-sidebar-border rounded-md pl-8 pr-20 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary/50 focus:border-primary/50 transition-colors"
-      />
-      <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1 pointer-events-none">
-        <kbd className="hidden sm:inline-flex items-center gap-0.5 rounded border border-sidebar-border bg-muted/30 px-1 py-0.5 text-[10px] text-muted-foreground font-sans">
-          <span className="text-[11px]">⌘</span>K
-        </kbd>
-      </div>
-    </div>
-  );
-}
+// GlobalSearchBar replaced by <GlobalSearch /> component
 
 function NavItem({
   href,
@@ -458,7 +410,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       <div className="flex-1 min-w-0 flex flex-col">
         {/* Top bar */}
         <div className="flex items-center gap-3 px-6 py-2.5 border-b border-sidebar-border bg-sidebar/60 backdrop-blur-sm shrink-0">
-          <GlobalSearchBar />
+          <GlobalSearch />
         </div>
         <main className="flex-1 min-w-0 overflow-auto">{children}</main>
       </div>
