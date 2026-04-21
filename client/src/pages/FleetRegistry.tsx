@@ -156,6 +156,7 @@ function downloadRailcarsCsv(rows: RailcarWithAssignment[]) {
     "Transit Status", "Transit Label",
     "Lessee", "Rider Name", "Schedule #", "MLA Lease #", "Lessor",
     "Expiration Date", "Monthly Rent",
+    "NBV", "OAC",
   ];
   const escape = (v: unknown) => {
     const s = v == null ? "" : String(v);
@@ -180,6 +181,8 @@ function downloadRailcarsCsv(rows: RailcarWithAssignment[]) {
     r.assignment?.rider?.master_lease?.lessor ?? "",
     r.assignment?.rider?.expiration_date ?? "",
     r.assignment?.rider?.monthly_rent != null ? String(r.assignment.rider.monthly_rent) : "",
+    (r as any).nbv != null ? String((r as any).nbv) : "",
+    (r as any).oac != null ? String((r as any).oac) : "",
   ].map(escape).join(","));
   const csv = [headers.map(escape).join(","), ...rows_data].join("\n");
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
@@ -977,6 +980,8 @@ function CarDetail({
         <DetailRow label="Lease Type" value={(r as any).lease_type ?? "—"} />
         <DetailRow label="Managed By" value={(r as any).managed ?? "—"} />
         <DetailRow label="Managed Category" value={(r as any).managed_category ?? "—"} />
+        <DetailRow label="NBV" value={(r as any).nbv != null ? `$${Number((r as any).nbv).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"} />
+        <DetailRow label="OAC" value={(r as any).oac != null ? `$${Number((r as any).oac).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"} />
       </dl>
 
       {/* Prior reporting marks */}
@@ -1429,6 +1434,8 @@ function RailcarFormDialog({
     old_car_initial: (car as any)?.old_car_initial ?? "",
     old_car_number: (car as any)?.old_car_number ?? "",
     notes: car?.notes ?? "",
+    nbv: (car as any)?.nbv != null ? String((car as any).nbv) : "",
+    oac: (car as any)?.oac != null ? String((car as any).oac) : "",
   }));
 
   // Assignment fields — only used when car is null (new car mode)
@@ -1599,6 +1606,30 @@ function RailcarFormDialog({
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
+              <Label>NBV <span className="text-muted-foreground font-normal text-xs">(Net Book Value)</span></Label>
+              <Input
+                type="number"
+                min="0"
+                step="0.01"
+                value={form.nbv}
+                onChange={(e) => setForm({ ...form, nbv: e.target.value })}
+                placeholder="e.g. 42500.00"
+              />
+            </div>
+            <div>
+              <Label>OAC <span className="text-muted-foreground font-normal text-xs">(Original Acquired Cost)</span></Label>
+              <Input
+                type="number"
+                min="0"
+                step="0.01"
+                value={form.oac}
+                onChange={(e) => setForm({ ...form, oac: e.target.value })}
+                placeholder="e.g. 55000.00"
+              />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
               <Label>Prior Car Initial</Label>
               <Input value={form.old_car_initial} onChange={(e) => setForm({ ...form, old_car_initial: e.target.value })} placeholder="e.g. ADMX" className="font-mono" />
             </div>
@@ -1745,6 +1776,8 @@ function useMemoReset(
         old_car_number: (car as any)?.old_car_number ?? "",
         sold_to: (car as any)?.sold_to ?? "",
         active: (car as any)?.active ?? true,
+        nbv: (car as any)?.nbv != null ? String((car as any).nbv) : "",
+        oac: (car as any)?.oac != null ? String((car as any).oac) : "",
       });
     }
   }, [open, car, setForm]);
