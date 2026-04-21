@@ -557,7 +557,7 @@ export default function Dashboard() {
                 value={data.kpis.expiring_12mo}
                 icon={AlertTriangle}
                 accent="warning"
-                onClick={() => setDrillKey("expiring_12mo")}
+                onClick={() => navigate("/leases?filter=expiring")}
               />
               <KpiCard
                 testId="kpi-riders"

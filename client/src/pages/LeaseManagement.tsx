@@ -39,6 +39,7 @@ import {
   StickyNote,
   Wand2,
   Download,
+  AlertTriangle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -122,6 +123,9 @@ export default function LeaseManagement() {
   const filterRiders = typeof window !== "undefined"
     ? new URLSearchParams(window.location.search).get("filter") === "riders"
     : false;
+  const filterExpiring = typeof window !== "undefined"
+    ? new URLSearchParams(window.location.search).get("filter") === "expiring"
+    : false;
 
   const { data: leases, isLoading } = useQuery<MasterLeaseWithRiders[]>({
     queryKey: ["/api/leases"],
@@ -147,10 +151,27 @@ export default function LeaseManagement() {
       // Expand all leases and all riders so every active rider is visible
       setExpandedLeases(new Set(leases.map((l) => l.id)));
       setExpandedRiders(new Set(leases.flatMap((l) => (l.riders ?? []).map((r: any) => r.id))));
+    } else if (filterExpiring) {
+      // Expand only MLAs/riders expiring within 12 months, sorted by closest expiration
+      const now = new Date();
+      const cutoff = new Date(now);
+      cutoff.setMonth(cutoff.getMonth() + 12);
+      const expiringRiders = leases
+        .flatMap((l) => (l.riders ?? []).map((r: any) => ({ ...r, leaseId: l.id })))
+        .filter((r) => {
+          if (!r.expiration_date) return false;
+          const d = new Date(r.expiration_date);
+          return d >= now && d <= cutoff;
+        })
+        .sort((a, b) => new Date(a.expiration_date).getTime() - new Date(b.expiration_date).getTime());
+      const parentLeaseIds = new Set(expiringRiders.map((r) => r.leaseId));
+      const riderIds = new Set(expiringRiders.map((r) => r.id));
+      setExpandedLeases(parentLeaseIds);
+      setExpandedRiders(riderIds);
     } else if (expandedLeases.size === 0) {
       setExpandedLeases(new Set([leases[0].id]));
     }
-  }, [leases, targetRiderId, filterRiders]);
+  }, [leases, targetRiderId, filterRiders, filterExpiring]);
 
   const toggleLease = (id: number) =>
     setExpandedLeases((s) => {
@@ -226,6 +247,13 @@ export default function LeaseManagement() {
           </div>
         }
       />
+
+      {filterExpiring && (
+        <div className="mx-8 mt-1 px-4 py-2.5 rounded-lg border border-warning/30 bg-warning/5 text-sm text-warning flex items-center gap-2">
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          Showing riders expiring within 12 months, sorted by closest expiration date
+        </div>
+      )}
 
       <div className="px-8 py-6 space-y-3">
         {isLoading ? (
