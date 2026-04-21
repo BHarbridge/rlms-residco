@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import PageHeader from "@/components/PageHeader";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -488,6 +489,7 @@ export default function Dashboard() {
 
   const maxFleet = Math.max(1, ...(data?.cars_by_fleet.map((f) => f.count) ?? [0]));
   const utilPct = data?.kpis.utilization_pct ?? 0;
+  const [, navigate] = useLocation();
 
   return (
     <div>
@@ -525,7 +527,7 @@ export default function Dashboard() {
                 label="Unassigned Cars"
                 value={data.kpis.unassigned_cars}
                 icon={CircleDashed}
-                onClick={() => setDrillKey("unassigned_cars")}
+                onClick={() => navigate("/fleet?filter=unassigned")}
               />
               {/* Utilization — special card with ring */}
               <button
@@ -562,7 +564,7 @@ export default function Dashboard() {
                 label="Active Riders"
                 value={data.kpis.riders_count}
                 icon={FileText}
-                onClick={() => setDrillKey("riders_count")}
+                onClick={() => navigate("/leases?filter=riders")}
               />
             </>
           ) : null}

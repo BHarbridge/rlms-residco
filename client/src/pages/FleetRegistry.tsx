@@ -1,4 +1,4 @@
-import { useMemo, useState, useCallback } from "react";
+import { useMemo, useState, useCallback, useEffect } from "react";
 import { useCanEdit } from "@/lib/AuthContext";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import PageHeader from "@/components/PageHeader";
@@ -151,7 +151,13 @@ function StatusBadge({ status }: { status: string | null | undefined }) {
 
 export default function FleetRegistry() {
   const canEdit = useCanEdit();
+  // Deep-link: ?filter=unassigned pre-filters to cars with no assignment
+  const initAssigned = typeof window !== "undefined"
+    ? new URLSearchParams(window.location.search).get("filter") === "unassigned" ? "unassigned" : "all"
+    : "all";
+
   const [search, setSearch] = useState("");
+  const [assignedFilter, setAssignedFilter] = useState<string>(initAssigned);
   const [riderFilter, setRiderFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({
@@ -190,6 +196,8 @@ export default function FleetRegistry() {
     if (transitFilter === "in_transit") rows = rows.filter((r) => !!r.transit_status);
     if (transitFilter === "normal") rows = rows.filter((r) => !r.transit_status);
     if (entityFilter !== "all") rows = rows.filter((r) => (r as any).entity === entityFilter);
+    if (assignedFilter === "unassigned") rows = rows.filter((r) => !r.assignment);
+    if (assignedFilter === "assigned") rows = rows.filter((r) => !!r.assignment);
     if (riderFilter !== "all")
       rows = rows.filter((r) => String(r.assignment?.rider_id ?? "") === riderFilter);
 
@@ -412,6 +420,16 @@ export default function FleetRegistry() {
               <SelectItem value="all">All cars</SelectItem>
               <SelectItem value="in_transit">In transit / repair</SelectItem>
               <SelectItem value="normal">Normal service</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={assignedFilter} onValueChange={setAssignedFilter}>
+            <SelectTrigger className="w-[170px]" data-testid="filter-assigned">
+              <SelectValue placeholder="Assignment" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All cars</SelectItem>
+              <SelectItem value="assigned">Assigned only</SelectItem>
+              <SelectItem value="unassigned">Unassigned only</SelectItem>
             </SelectContent>
           </Select>
           <div className="text-xs text-muted-foreground ml-auto font-mono-num">

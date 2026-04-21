@@ -115,16 +115,19 @@ export default function LeaseManagement() {
   const [editRider, setEditRider] = useState<any | null>(null);
   const { toast } = useToast();
 
-  // Parse ?rider= deep-link param
+  // Parse deep-link params
   const targetRiderId = typeof window !== "undefined"
     ? Number(new URLSearchParams(window.location.search).get("rider")) || null
     : null;
+  const filterRiders = typeof window !== "undefined"
+    ? new URLSearchParams(window.location.search).get("filter") === "riders"
+    : false;
 
   const { data: leases, isLoading } = useQuery<MasterLeaseWithRiders[]>({
     queryKey: ["/api/leases"],
   });
 
-  // Auto-expand: deep-link rider takes priority, otherwise expand first lease
+  // Auto-expand: deep-link rider > ?filter=riders (all) > default first lease
   useEffect(() => {
     if (!leases || !leases.length) return;
     if (targetRiderId) {
@@ -135,16 +138,19 @@ export default function LeaseManagement() {
       if (parentLease) {
         setExpandedLeases(new Set([parentLease.id]));
         setExpandedRiders(new Set([targetRiderId]));
-        // Scroll to the rider row after a short render delay
         setTimeout(() => {
           const el = document.getElementById(`rider-row-${targetRiderId}`);
           if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
         }, 300);
       }
+    } else if (filterRiders) {
+      // Expand all leases and all riders so every active rider is visible
+      setExpandedLeases(new Set(leases.map((l) => l.id)));
+      setExpandedRiders(new Set(leases.flatMap((l) => (l.riders ?? []).map((r: any) => r.id))));
     } else if (expandedLeases.size === 0) {
       setExpandedLeases(new Set([leases[0].id]));
     }
-  }, [leases, targetRiderId]);
+  }, [leases, targetRiderId, filterRiders]);
 
   const toggleLease = (id: number) =>
     setExpandedLeases((s) => {
