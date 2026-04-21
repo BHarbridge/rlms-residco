@@ -172,6 +172,14 @@ export async function registerRoutes(
         ? Math.round((activeAssignments / railcars.length) * 1000) / 10
         : 0;
 
+      // RPS vs Owned entity bucketing
+      const rpsCars     = railcars.filter((r: any) => r.entity === "Rail Partners Select");
+      const ownedCars   = railcars.filter((r: any) => r.entity === "Main");
+      const rpsAssigned = rpsCars.filter((r: any) => assignedCarIds.has(r.id)).length;
+      const ownedAssigned = ownedCars.filter((r: any) => assignedCarIds.has(r.id)).length;
+      const rpsUtil   = rpsCars.length   > 0 ? Math.round((rpsAssigned   / rpsCars.length)   * 1000) / 10 : 0;
+      const ownedUtil = ownedCars.length > 0 ? Math.round((ownedAssigned / ownedCars.length) * 1000) / 10 : 0;
+
       const now = new Date();
       const twelveMo = new Date(now);
       twelveMo.setMonth(twelveMo.getMonth() + 12);
@@ -277,6 +285,12 @@ export async function registerRoutes(
           expiring_12mo: expiring12mo,
           riders_count: riders.length,
           utilization_pct: utilization,
+          rps_total: rpsCars.length,
+          rps_assigned: rpsAssigned,
+          rps_util_pct: rpsUtil,
+          owned_total: ownedCars.length,
+          owned_assigned: ownedAssigned,
+          owned_util_pct: ownedUtil,
         },
         // KPI drill-down detail lists
         detail: {
@@ -1145,7 +1159,11 @@ export async function registerRoutes(
       const { email, role } = req.body as { email: string; role: "admin" | "viewer" };
       if (!email || !role) return res.status(400).json({ error: "email and role required" });
       // Use Supabase Admin API to invite user (sends email with magic link)
-      const { data: inviteData, error: inviteErr } = await supabaseAdmin.auth.admin.inviteUserByEmail(email);
+      // redirectTo must point to the live app so the invite link lands correctly
+      const appUrl = process.env.VITE_API_BASE ?? "https://rlms-residco.onrender.com";
+      const { data: inviteData, error: inviteErr } = await supabaseAdmin.auth.admin.inviteUserByEmail(email, {
+        redirectTo: appUrl,
+      });
       if (inviteErr) {
         return res.status(400).json({ error: `Invite failed: ${inviteErr.message}` });
       }

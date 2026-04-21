@@ -829,8 +829,7 @@ function CarDetail({
         <DetailRow label="Tare (lbs)" value={r.tare_weight_lbs ?? "—"} />
         <DetailRow label="Load Limit" value={r.load_limit_lbs ?? "—"} />
         <DetailRow label="Built" value={r.built_year ?? "—"} />
-        <DetailRow label="Coating" value={(r as any).coating ?? "—"} />
-        <DetailRow label="Lining Material" value={(r as any).lining_material ?? "—"} />
+        <DetailRow label="Lining" value={(r as any).lining_material || (r as any).coating || "—"} />
         <DetailRow label="Lease Type" value={(r as any).lease_type ?? "—"} />
         <DetailRow label="Managed By" value={(r as any).managed ?? "—"} />
         <DetailRow label="Managed Category" value={(r as any).managed_category ?? "—"} />
@@ -1088,7 +1087,7 @@ function RemarkChangeDialog({
             <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">Current number</div>
             <div className="font-mono font-semibold">{currentNumber}</div>
           </div>
-          <p className="text-xs text-muted-foreground">All car attributes (type, coating, capacity, history) are retained. Only the car number / reporting mark changes.</p>
+          <p className="text-xs text-muted-foreground">All car attributes (type, lining, capacity, history) are retained. Only the car number / reporting mark changes.</p>
           <div>
             <Label>New Car Number <span className="text-destructive">*</span></Label>
             <Input
@@ -1141,7 +1140,6 @@ function RailcarFormDialog({
     car_type: car?.car_type ?? "Hopper",
     status: car?.status ?? "Active/In-Service",
     entity: (car as any)?.entity ?? "",
-    coating: (car as any)?.coating ?? "",
     transit_status: (car as any)?.transit_status ?? "",
     transit_label: (car as any)?.transit_label ?? "",
     mechanical_designation: (car as any)?.mechanical_designation ?? "",
@@ -1149,7 +1147,8 @@ function RailcarFormDialog({
     lease_type: (car as any)?.lease_type ?? "",
     managed: (car as any)?.managed ?? "",
     managed_category: (car as any)?.managed_category ?? "",
-    lining_material: (car as any)?.lining_material ?? "",
+    // Merge coating into lining_material — prefer lining_material, fall back to coating
+    lining_material: (car as any)?.lining_material || (car as any)?.coating || "",
     old_car_initial: (car as any)?.old_car_initial ?? "",
     old_car_number: (car as any)?.old_car_number ?? "",
     notes: car?.notes ?? "",
@@ -1228,10 +1227,12 @@ function RailcarFormDialog({
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <Label>Reporting Marks</Label>
+              <Label>Reporting Marks <span className="text-[10px] text-muted-foreground font-normal">(alpha prefix, e.g. HWCX)</span></Label>
               <Input
                 value={form.reporting_marks}
-                onChange={(e) => setForm({ ...form, reporting_marks: e.target.value })}
+                onChange={(e) => setForm({ ...form, reporting_marks: e.target.value.toUpperCase() })}
+                placeholder="e.g. HWCX"
+                className="font-mono"
               />
             </div>
             <div>
@@ -1271,18 +1272,14 @@ function RailcarFormDialog({
               </Select>
             </div>
             <div>
-              <Label>Coating</Label>
-              <Input value={form.coating} onChange={(e) => setForm({ ...form, coating: e.target.value })} placeholder="e.g. Epoxy, Bare steel" />
+              <Label>Mech. Designation</Label>
+              <Input value={form.mechanical_designation} onChange={(e) => setForm({ ...form, mechanical_designation: e.target.value })} placeholder="e.g. LO, GT, HTS" />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <Label>Mech. Designation</Label>
-              <Input value={form.mechanical_designation} onChange={(e) => setForm({ ...form, mechanical_designation: e.target.value })} placeholder="e.g. LO, GT, HTS" />
-            </div>
-            <div>
-              <Label>Lining Material</Label>
-              <Input value={form.lining_material} onChange={(e) => setForm({ ...form, lining_material: e.target.value })} placeholder="e.g. 26, 28" />
+              <Label>Lining <span className="text-[10px] text-muted-foreground font-normal">(coating / lining material)</span></Label>
+              <Input value={form.lining_material} onChange={(e) => setForm({ ...form, lining_material: e.target.value })} placeholder="e.g. Epoxy, 26, Bare steel" />
             </div>
           </div>
           <div>
@@ -1436,18 +1433,17 @@ function useMemoReset(
         reporting_marks: car?.reporting_marks ?? "HWCX",
         car_type: car?.car_type ?? "Hopper",
         status: car?.status ?? "Active/In-Service",
-        coating: (car as any)?.coating ?? "",
         transit_status: (car as any)?.transit_status ?? "",
         transit_label: (car as any)?.transit_label ?? "",
         notes: car?.notes ?? "",
         entity: (car as any)?.entity ?? "",
-        car_initial: (car as any)?.car_initial ?? "",
         mechanical_designation: (car as any)?.mechanical_designation ?? "",
         general_description: (car as any)?.general_description ?? "",
         lease_type: (car as any)?.lease_type ?? "",
         managed: (car as any)?.managed ?? "",
         managed_category: (car as any)?.managed_category ?? "",
-        lining_material: (car as any)?.lining_material ?? "",
+        // Merge coating into lining_material
+        lining_material: (car as any)?.lining_material || (car as any)?.coating || "",
         old_car_initial: (car as any)?.old_car_initial ?? "",
         old_car_number: (car as any)?.old_car_number ?? "",
         sold_to: (car as any)?.sold_to ?? "",

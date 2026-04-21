@@ -66,6 +66,12 @@ type DashboardData = {
     expiring_12mo: number;
     riders_count: number;
     utilization_pct: number;
+    rps_total: number;
+    rps_assigned: number;
+    rps_util_pct: number;
+    owned_total: number;
+    owned_assigned: number;
+    owned_util_pct: number;
   };
   detail: {
     all_cars: CarRow[];
@@ -561,6 +567,54 @@ export default function Dashboard() {
             </>
           ) : null}
         </div>
+
+        {/* Entity Utilization: RPS vs Owned */}
+        {data && (
+          <section className="rounded-lg border border-card-border bg-card">
+            <header className="px-5 py-3.5 border-b border-border flex items-center justify-between">
+              <h2 className="text-sm font-semibold">Fleet Utilization by Entity</h2>
+              <span className="text-[11px] uppercase tracking-[0.12em] text-muted-foreground">RPS vs Owned</span>
+            </header>
+            <div className="p-5 grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {/* RPS */}
+              <div className="rounded-md border border-violet-500/20 bg-violet-500/5 p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <div>
+                    <span className="text-[10px] uppercase tracking-widest font-bold px-1.5 py-0.5 rounded border bg-violet-500/15 text-violet-300 border-violet-500/30">RPS</span>
+                    <span className="text-xs text-muted-foreground ml-2">Rail Partners Select</span>
+                  </div>
+                  <span className="text-xl font-semibold tabular-nums font-mono-num text-violet-300">{data.kpis.rps_util_pct}%</span>
+                </div>
+                <div className="h-1.5 rounded-full bg-muted overflow-hidden mb-2">
+                  <div className="h-full bg-violet-500 transition-all" style={{ width: `${data.kpis.rps_util_pct}%` }} />
+                </div>
+                <div className="flex justify-between text-[11px] text-muted-foreground">
+                  <span>{data.kpis.rps_assigned} assigned</span>
+                  <span>{data.kpis.rps_total - data.kpis.rps_assigned} off-lease</span>
+                  <span className="font-mono-num">{data.kpis.rps_total} total</span>
+                </div>
+              </div>
+              {/* Owned */}
+              <div className="rounded-md border border-sky-500/20 bg-sky-500/5 p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <div>
+                    <span className="text-[10px] uppercase tracking-widest font-bold px-1.5 py-0.5 rounded border bg-sky-500/15 text-sky-300 border-sky-500/30">OWNED</span>
+                    <span className="text-xs text-muted-foreground ml-2">RESIDCO Fleet</span>
+                  </div>
+                  <span className="text-xl font-semibold tabular-nums font-mono-num text-sky-300">{data.kpis.owned_util_pct}%</span>
+                </div>
+                <div className="h-1.5 rounded-full bg-muted overflow-hidden mb-2">
+                  <div className="h-full bg-sky-500 transition-all" style={{ width: `${data.kpis.owned_util_pct}%` }} />
+                </div>
+                <div className="flex justify-between text-[11px] text-muted-foreground">
+                  <span>{data.kpis.owned_assigned} assigned</span>
+                  <span>{data.kpis.owned_total - data.kpis.owned_assigned} off-lease</span>
+                  <span className="font-mono-num">{data.kpis.owned_total} total</span>
+                </div>
+              </div>
+            </div>
+          </section>
+        )}
 
         {/* Two panels */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
