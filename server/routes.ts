@@ -20,8 +20,16 @@ const upload = multer({
 const STORAGE_BUCKET = "rlms-attachments";
 
 function errHandler(res: Response, err: unknown) {
-  const msg = err instanceof Error ? err.message : String(err);
-  console.error("[api]", msg);
+  // Handle Supabase StorageError and PostgrestError objects (have .message but aren't Error instances)
+  let msg: string;
+  if (err instanceof Error) {
+    msg = err.message;
+  } else if (err && typeof err === 'object' && 'message' in err) {
+    msg = String((err as any).message);
+  } else {
+    msg = String(err);
+  }
+  console.error("[api]", msg, err);
   return res.status(500).json({ message: msg });
 }
 
@@ -1265,14 +1273,18 @@ export async function registerRoutes(
         .eq("id", id)
         .single();
       if (fetchErr || !att) return res.status(404).json({ error: "Attachment not found" });
-      // Sign a URL valid for 60 minutes
-      const { data: signed, error: signErr } = await supabaseAdmin.storage
+      // Stream file directly through the backend (avoids signed URL key format issues)
+      const { data: fileBlob, error: dlErr } = await supabaseAdmin.storage
         .from(STORAGE_BUCKET)
-        .createSignedUrl(att.storage_path, 3600, {
-          download: att.file_name,
-        });
-      if (signErr || !signed) throw signErr ?? new Error("Could not create signed URL");
-      res.json({ url: signed.signedUrl });
+        .download(att.storage_path);
+      if (dlErr || !fileBlob) throw dlErr ?? new Error("Could not download file from storage");
+      const arrayBuffer = await fileBlob.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      const isPdf = att.file_name.toLowerCase().endsWith('.pdf');
+      res.setHeader('Content-Type', isPdf ? 'application/pdf' : (fileBlob.type || 'application/octet-stream'));
+      res.setHeader('Content-Disposition', isPdf ? `inline; filename="${att.file_name}"` : `attachment; filename="${att.file_name}"`);
+      res.setHeader('Content-Length', buffer.length);
+      res.send(buffer);
     } catch (err) { errHandler(res, err); }
   });
 

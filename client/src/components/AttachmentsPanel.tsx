@@ -132,11 +132,26 @@ export default function AttachmentsPanel({ entityType, entityId, compact = false
     setDownloadingId(att.id);
     try {
       const res = await apiRequest("GET", `/api/attachments/${att.id}/download`);
-      const { url } = await res.json();
-      // Open in new tab — browser handles PDF inline, others download
-      window.open(url, "_blank", "noopener,noreferrer");
+      if (!res.ok) throw new Error("Download failed");
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const isPdf = att.file_name.toLowerCase().endsWith('.pdf');
+      if (isPdf) {
+        // Open PDF inline in a new tab
+        window.open(blobUrl, "_blank", "noopener,noreferrer");
+      } else {
+        // Trigger download for non-PDF files
+        const a = document.createElement('a');
+        a.href = blobUrl;
+        a.download = att.file_name;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      }
+      // Revoke after a short delay to allow the tab/download to start
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
     } catch {
-      toast({ title: "Download failed", description: "Could not generate download link.", variant: "destructive" });
+      toast({ title: "Download failed", description: "Could not download file.", variant: "destructive" });
     } finally {
       setDownloadingId(null);
     }
