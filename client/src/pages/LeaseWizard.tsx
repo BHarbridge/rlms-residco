@@ -78,7 +78,7 @@ type RiderForm = {
   existing_car_ids: number[];
 };
 
-const ENTITY_OPTIONS = ["Main", "Rail Partners Select", "Coal"];
+const ENTITY_OPTIONS = ["Main", "Rail Partners Select"];
 const STATUS_OPTIONS = ["Active/In-Service", "Storage", "Bad Order", "Off-Lease", "Retired", "Scrapped"];
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -117,10 +117,10 @@ function blankCar(): NewCar {
 const ENTITY_BADGE: Record<string, string> = {
   "Rail Partners Select": "bg-violet-500/15 text-violet-300 border-violet-500/30",
   "Main":                 "bg-sky-500/15 text-sky-300 border-sky-500/30",
-  "Coal":                 "bg-zinc-500/15 text-zinc-300 border-zinc-500/30",
 };
 const ENTITY_LABEL: Record<string, string> = {
-  "Rail Partners Select": "RPS", "Main": "OWNED", "Coal": "COAL",
+  "Rail Partners Select": "RPS",
+  "Main": "Owned",
 };
 
 function EntityBadge({ entity }: { entity: string }) {
@@ -322,7 +322,7 @@ function NewCarRow({ car, onChange, onRemove }: {
         <Select value={car.entity} onValueChange={(v) => onChange({ ...car, entity: v })}>
           <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
           <SelectContent>
-            {ENTITY_OPTIONS.map((e) => <SelectItem key={e} value={e}>{e}</SelectItem>)}
+            {ENTITY_OPTIONS.map((e) => <SelectItem key={e} value={e}>{ENTITY_LABEL[e] ?? e}</SelectItem>)}
           </SelectContent>
         </Select>
       </div>
@@ -387,7 +387,7 @@ function BulkPasteDialog({ open, onClose, onAdd }: {
               <Select value={entity} onValueChange={setEntity}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {ENTITY_OPTIONS.map((e) => <SelectItem key={e} value={e}>{e}</SelectItem>)}
+                  {ENTITY_OPTIONS.map((e) => <SelectItem key={e} value={e}>{ENTITY_LABEL[e] ?? e}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
@@ -582,7 +582,7 @@ export default function LeaseWizard() {
                 </div>
                 <div>
                   <Label>Lessor</Label>
-                  <Input value={mla.lessor} onChange={(e) => setMla({ ...mla, lessor: e.target.value })} />
+                  <Input placeholder="e.g. RESIDCO" value={mla.lessor} onChange={(e) => setMla({ ...mla, lessor: e.target.value })} />
                 </div>
                 <div>
                   <Label>Lessee <span className="text-destructive">*</span></Label>
@@ -864,16 +864,25 @@ export default function LeaseWizard() {
             {riders.map((r, i) => (
               <div key={r._key} className="rounded-lg border border-card-border bg-card p-5">
                 <div className="flex items-center justify-between mb-3">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <Users className="h-4 w-4 text-primary" />
                     <h2 className="text-sm font-semibold">{r.rider_name}</h2>
                     {r.schedule_number && <span className="text-xs text-muted-foreground">Sch {r.schedule_number}</span>}
+                    {r.sold_to?.trim() && (
+                      <span className="text-[9px] uppercase tracking-widest font-bold px-1.5 py-0.5 rounded border bg-amber-500/15 text-amber-400 border-amber-500/30">
+                        SOLD → {r.sold_to}
+                      </span>
+                    )}
                   </div>
                   <span className="text-xs text-muted-foreground font-mono">
                     {r.new_cars.length + r.existing_car_ids.length} car{r.new_cars.length + r.existing_car_ids.length !== 1 ? "s" : ""}
                   </span>
                 </div>
                 <div className="grid grid-cols-4 gap-3 text-sm mb-3">
+                  <div>
+                    <span className="text-[10px] uppercase tracking-wider text-muted-foreground block">Effective</span>
+                    <span>{r.effective_date || "—"}</span>
+                  </div>
                   <div>
                     <span className="text-[10px] uppercase tracking-wider text-muted-foreground block">Expires</span>
                     <span>{r.expiration_date || "—"}</span>
@@ -887,7 +896,19 @@ export default function LeaseWizard() {
                     <span>{r.permissible_commodity || "—"}</span>
                   </div>
                   <div>
-                    <span className="text-[10px] uppercase tracking-wider text-muted-foreground block">Rate</span>
+                    <span className="text-[10px] uppercase tracking-wider text-muted-foreground block">Monthly Rent / Car</span>
+                    <span>{r.monthly_rent_per_car ? `$${parseFloat(r.monthly_rent_per_car).toFixed(2)}` : "—"}</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] uppercase tracking-wider text-muted-foreground block">Lessor's Cost</span>
+                    <span>{r.lessors_cost ? `$${r.lessors_cost}` : "—"}</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] uppercase tracking-wider text-muted-foreground block">Base Term</span>
+                    <span>{r.base_term_months ? `${r.base_term_months} mo` : "—"}</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] uppercase tracking-wider text-muted-foreground block">Rate %</span>
                     <span>{r.monthly_rate_pct ? `${r.monthly_rate_pct}%` : "—"}</span>
                   </div>
                 </div>

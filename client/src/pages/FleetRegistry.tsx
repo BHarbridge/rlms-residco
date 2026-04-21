@@ -68,8 +68,7 @@ const TRANSIT_STATUSES = [
 // Entity ownership badge
 const ENTITY_STYLES: Record<string, { label: string; cls: string }> = {
   "Rail Partners Select": { label: "RPS",   cls: "bg-violet-500/15 text-violet-300 border-violet-500/30 font-semibold" },
-  "Main":                 { label: "OWNED", cls: "bg-sky-500/15 text-sky-300 border-sky-500/30 font-semibold" },
-  "Coal":                 { label: "COAL",  cls: "bg-zinc-500/15 text-zinc-300 border-zinc-500/30 font-semibold" },
+  "Main":                 { label: "Owned", cls: "bg-sky-500/15 text-sky-300 border-sky-500/30 font-semibold" },
 };
 
 // Fixed status options for the filter dropdown
@@ -401,9 +400,8 @@ export default function FleetRegistry() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All ownership</SelectItem>
-              <SelectItem value="Main">RESIDCO Owned</SelectItem>
-              <SelectItem value="Rail Partners Select">Rail Partners Select (RPS)</SelectItem>
-              <SelectItem value="Coal">Coal</SelectItem>
+              <SelectItem value="Main">Owned</SelectItem>
+              <SelectItem value="Rail Partners Select">RPS</SelectItem>
             </SelectContent>
           </Select>
           <Select value={transitFilter} onValueChange={setTransitFilter}>
@@ -1157,21 +1155,55 @@ function RailcarFormDialog({
     notes: car?.notes ?? "",
   }));
 
+  // Assignment fields — only used when car is null (new car mode)
+  // Kept separate from `form` since they go to /api/move, not /api/railcars
+  const [assignRiderId, setAssignRiderId] = useState("");
+  const [assignFleetName, setAssignFleetName] = useState("");
+  const [assignReason, setAssignReason] = useState("");
+
   // reset when opening
   useMemoReset(open, car, setForm);
+  useEffect(() => {
+    if (open) {
+      setAssignRiderId("");
+      setAssignFleetName("");
+      setAssignReason("");
+    }
+  }, [open]);
+
+  const { data: ridersData } = useQuery<any[]>({ queryKey: ["/api/riders"] });
+  const allRiders: any[] = ridersData ?? [];
 
   const save = useMutation({
     mutationFn: async () => {
       if (car) {
+        // apiRequest throws on non-OK automatically
         await apiRequest("PATCH", `/api/railcars/${car.id}`, form);
       } else {
-        await apiRequest("POST", `/api/railcars`, form);
+        const res = await apiRequest("POST", `/api/railcars`, form);
+        // If a rider was selected, assign the new car to it immediately
+        if (assignRiderId) {
+          const newCar = await res.json();
+          await apiRequest("POST", "/api/move", {
+            car_ids: [newCar.id],
+            to_rider_id: Number(assignRiderId),
+            new_fleet_name: assignFleetName.trim() || null,
+            reason: assignReason.trim() || "New Assignment",
+            moved_by: "user",
+          });
+        }
       }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/railcars"] });
       queryClient.invalidateQueries({ queryKey: ["/api/dashboard"] });
-      toast({ title: car ? "Railcar updated" : "Railcar created" });
+      if (!car && assignRiderId) {
+        queryClient.invalidateQueries({ queryKey: ["/api/history"] });
+        const riderName = allRiders.find((r: any) => String(r.id) === assignRiderId)?.rider_name ?? "rider";
+        toast({ title: "Railcar created & assigned", description: `Assigned to ${riderName}` });
+      } else {
+        toast({ title: car ? "Railcar updated" : "Railcar created" });
+      }
       onClose();
     },
     onError: (e: Error) =>
@@ -1184,7 +1216,7 @@ function RailcarFormDialog({
         <DialogHeader>
           <DialogTitle>{car ? "Edit Railcar" : "Add Railcar"}</DialogTitle>
         </DialogHeader>
-        <div className="space-y-3">
+        <div className="space-y-3 overflow-y-auto pr-1" style={{ maxHeight: 'calc(80vh - 120px)' }}>
           <div>
             <Label>Car Number</Label>
             <Input
@@ -1221,10 +1253,8 @@ function RailcarFormDialog({
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="none">— Not set —</SelectItem>
-                <SelectItem value="Main">RESIDCO Owned (Main)</SelectItem>
-                <SelectItem value="Rail Partners Select">Rail Partners Select (RPS)</SelectItem>
-                <SelectItem value="Coal">Coal</SelectItem>
-                <SelectItem value="Main-Coal">Main-Coal</SelectItem>
+                <SelectItem value="Main">Owned</SelectItem>
+                <SelectItem value="Rail Partners Select">RPS</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -1332,13 +1362,60 @@ function RailcarFormDialog({
               rows={3}
             />
           </div>
+
+          {/* ── Assign to Rider (new cars only) ──────────────────────────── */}
+          {!car && (
+            <div className="rounded-md border border-border bg-muted/20 p-4 space-y-3">
+              <div className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
+                Assign to Rider <span className="normal-case tracking-normal font-normal text-muted-foreground/70">(optional)</span>
+              </div>
+              <div>
+                <Label className="text-xs">Rider</Label>
+                <Select value={assignRiderId || "__none"} onValueChange={(v) => setAssignRiderId(v === "__none" ? "" : v)}>
+                  <SelectTrigger data-testid="select-new-car-rider">
+                    <SelectValue placeholder="— Skip assignment —" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none">— Skip assignment —</SelectItem>
+                    {allRiders.map((r: any) => (
+                      <SelectItem key={r.id} value={String(r.id)}>
+                        {r.rider_name}{r.master_lease?.lease_number ? ` · ${r.master_lease.lease_number}` : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              {assignRiderId && (
+                <>
+                  <div>
+                    <Label className="text-xs">Lessee Name</Label>
+                    <Input
+                      value={assignFleetName}
+                      onChange={(e) => setAssignFleetName(e.target.value)}
+                      placeholder="e.g. COVIA, Preferred Sands"
+                      data-testid="input-new-car-fleet"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-xs">Reason <span className="text-muted-foreground font-normal">(optional)</span></Label>
+                    <Input
+                      value={assignReason}
+                      onChange={(e) => setAssignReason(e.target.value)}
+                      placeholder="New Assignment"
+                      data-testid="input-new-car-reason"
+                    />
+                  </div>
+                </>
+              )}
+            </div>
+          )}
         </div>
         <DialogFooter>
           <Button variant="secondary" onClick={onClose}>
             Cancel
           </Button>
           <Button onClick={() => save.mutate()} disabled={save.isPending}>
-            {save.isPending ? "Saving…" : car ? "Save" : "Create"}
+            {save.isPending ? "Saving…" : car ? "Save" : (assignRiderId ? "Create & Assign" : "Create")}
           </Button>
         </DialogFooter>
       </DialogContent>
