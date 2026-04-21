@@ -828,6 +828,24 @@ export async function registerRoutes(
     }
   });
 
+  // GET /api/contacts — all contacts across all riders, joined with rider + MLA info
+  app.get("/api/contacts", async (_req, res) => {
+    try {
+      const { data, error } = await supabase
+        .from("rider_contacts")
+        .select(`
+          *,
+          rider:riders(
+            id, rider_name, schedule_number,
+            master_lease:master_leases(id, lease_number, lessee)
+          )
+        `)
+        .order("name");
+      if (error) throw error;
+      res.json(data ?? []);
+    } catch (err) { errHandler(res, err); }
+  });
+
   // ---------- Rider Contacts ----------
   app.get("/api/riders/:id/contacts", async (req, res) => {
     try {

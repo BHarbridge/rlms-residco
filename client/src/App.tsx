@@ -16,6 +16,7 @@ import BulkImportPage from "@/pages/BulkImport";
 import AllCars from "@/pages/AllCars";
 import LeaseWizard from "@/pages/LeaseWizard";
 import UserManagement from "@/pages/UserManagement";
+import Contacts from "@/pages/Contacts";
 import Login from "@/pages/Login";
 import NotFound from "@/pages/not-found";
 
@@ -31,6 +32,7 @@ function AppRouter() {
       <Route path="/history" component={HistoryPage} />
       <Route path="/search" component={SearchPage} />
       <Route path="/import" component={BulkImportPage} />
+      <Route path="/contacts" component={Contacts} />
       <Route path="/users" component={UserManagement} />
       <Route component={NotFound} />
     </Switch>

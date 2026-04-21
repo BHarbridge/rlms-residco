@@ -18,6 +18,7 @@ import {
   ShieldCheck,
   Eye,
   KeyRound,
+  BookUser,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/AuthContext";
@@ -46,6 +47,7 @@ const mainNav = [
   { href: "/move",     label: "Move Cars",        icon: ArrowRightLeft },
   { href: "/history",  label: "History",          icon: History },
   { href: "/search",   label: "Search",           icon: Search },
+  { href: "/contacts", label: "Contacts",          icon: BookUser },
   { href: "/import",   label: "Bulk Import",      icon: Upload },
 ];
 
