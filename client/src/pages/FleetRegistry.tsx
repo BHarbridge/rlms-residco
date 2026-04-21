@@ -683,12 +683,47 @@ function CarDetail({
 }) {
   const { toast } = useToast();
   const [remarkOpen, setRemarkOpen] = useState(false);
+  // Assign / reassign state
+  const [assignOpen, setAssignOpen] = useState(false);
+  const [assignRiderId, setAssignRiderId] = useState("");
+  const [assignFleet, setAssignFleet] = useState("");
+  const [assignReason, setAssignReason] = useState("");
   const { data, isLoading } = useQuery<{
     railcar: RailcarWithAssignment;
     history: any[];
     number_history: any[];
   }>({
     queryKey: ["/api/railcars", carId],
+  });
+
+  // Riders list for the assign dropdown (cached from parent's query)
+  const { data: ridersData } = useQuery<any[]>({ queryKey: ["/api/riders"] });
+  const allRiders: any[] = ridersData ?? [];
+
+  const assignMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/move", {
+        car_ids: [carId],
+        to_rider_id: Number(assignRiderId),
+        new_fleet_name: assignFleet.trim() || null,
+        reason: assignReason.trim() || null,
+        moved_by: "user",
+      });
+      if (!res.ok) throw new Error(await res.text());
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/railcars", carId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/railcars"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/dashboard"] });
+      toast({ title: "Car assigned", description: "Assignment saved successfully." });
+      setAssignOpen(false);
+      setAssignRiderId("");
+      setAssignFleet("");
+      setAssignReason("");
+    },
+    onError: (err: any) => {
+      toast({ title: "Assignment failed", description: err.message, variant: "destructive" });
+    },
   });
 
   if (isLoading || !data) {
@@ -842,6 +877,94 @@ function CarDetail({
           <div className="text-sm text-muted-foreground italic">Unassigned</div>
         )}
       </div>
+
+      {/* Assign / Reassign panel */}
+      {canEdit && (
+        <div className="mt-4">
+          {!assignOpen ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full"
+              onClick={() => {
+                setAssignFleet(r.assignment?.fleet_name ?? "");
+                setAssignRiderId(r.assignment?.rider_id ? String(r.assignment.rider_id) : "");
+                setAssignOpen(true);
+              }}
+              data-testid="btn-open-assign"
+            >
+              {r.assignment ? "Reassign to Different Rider" : "Assign to Rider"}
+            </Button>
+          ) : (
+            <div className="rounded-md border border-primary/30 bg-primary/5 p-4 space-y-3">
+              <div className="text-[10px] uppercase tracking-[0.2em] text-primary mb-1">
+                {r.assignment ? "Reassign Car" : "Assign Car to Rider"}
+              </div>
+
+              {/* Rider picker grouped by lease */}
+              <div>
+                <Label className="text-xs">Rider</Label>
+                <Select value={assignRiderId} onValueChange={setAssignRiderId}>
+                  <SelectTrigger data-testid="select-assign-rider">
+                    <SelectValue placeholder="Select a rider…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {allRiders.length === 0 && (
+                      <SelectItem value="__none" disabled>No riders found</SelectItem>
+                    )}
+                    {allRiders.map((rd: any) => (
+                      <SelectItem key={rd.id} value={String(rd.id)}>
+                        {rd.rider_name}
+                        {rd.master_lease?.lease_number ? ` · ${rd.master_lease.lease_number}` : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Lessee */}
+              <div>
+                <Label className="text-xs">Lessee</Label>
+                <Input
+                  value={assignFleet}
+                  onChange={(e) => setAssignFleet(e.target.value)}
+                  placeholder="e.g. COVIA, Preferred Sands"
+                  data-testid="input-assign-fleet"
+                />
+              </div>
+
+              {/* Reason */}
+              <div>
+                <Label className="text-xs">Reason <span className="text-muted-foreground font-normal">(optional)</span></Label>
+                <Input
+                  value={assignReason}
+                  onChange={(e) => setAssignReason(e.target.value)}
+                  placeholder="New Assignment"
+                  data-testid="input-assign-reason"
+                />
+              </div>
+
+              <div className="flex gap-2 pt-1">
+                <Button
+                  size="sm"
+                  disabled={!assignRiderId || assignMutation.isPending}
+                  onClick={() => assignMutation.mutate()}
+                  data-testid="btn-save-assign"
+                >
+                  {assignMutation.isPending ? "Saving…" : "Save Assignment"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setAssignOpen(false)}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="mt-6 border-t border-border pt-5">
         <div className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground mb-3">
