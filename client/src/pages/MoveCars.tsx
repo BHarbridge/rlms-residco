@@ -208,32 +208,50 @@ export default function MoveCars() {
                         </tr>
                       </thead>
                       <tbody>
-                        {sourceCars.map((c) => (
-                          <tr
-                            key={c.id}
-                            className={cn(
-                              "border-t border-border cursor-pointer hover-elevate",
-                              selected.has(c.id) && "bg-primary/5"
-                            )}
-                            onClick={() => toggle(c.id)}
-                            data-testid={`source-car-${c.id}`}
-                          >
-                            <td className="px-3 py-1.5">
-                              <Checkbox
-                                checked={selected.has(c.id)}
-                                onCheckedChange={() => toggle(c.id)}
-                                onClick={(e) => e.stopPropagation()}
-                              />
-                            </td>
-                            <td className="px-3 py-1.5 font-mono-num">{c.car_number}</td>
-                            <td className="px-3 py-1.5">
-                              {c.assignment?.fleet_name ?? "—"}
-                            </td>
-                            <td className="px-3 py-1.5 text-muted-foreground">
-                              {c.status ?? "—"}
-                            </td>
-                          </tr>
-                        ))}
+                        {sourceCars.map((c) => {
+                          // car_number already contains the full reporting mark (e.g. HWCX010601)
+                          // reporting_marks is the alpha prefix (e.g. HWCX)
+                          const numericSuffix = c.reporting_marks && c.car_number.toUpperCase().startsWith(c.reporting_marks.toUpperCase())
+                            ? c.car_number.slice(c.reporting_marks.length)
+                            : null;
+                          return (
+                            <tr
+                              key={c.id}
+                              className={cn(
+                                "border-t border-border cursor-pointer hover-elevate",
+                                selected.has(c.id) && "bg-primary/5"
+                              )}
+                              onClick={() => toggle(c.id)}
+                              data-testid={`source-car-${c.id}`}
+                            >
+                              <td className="px-3 py-1.5">
+                                <Checkbox
+                                  checked={selected.has(c.id)}
+                                  onCheckedChange={() => toggle(c.id)}
+                                  onClick={(e) => e.stopPropagation()}
+                                />
+                              </td>
+                              <td className="px-3 py-1.5">
+                                <span className="font-mono font-semibold text-foreground">
+                                  {c.reporting_marks && numericSuffix !== null ? (
+                                    <><span className="text-primary">{c.reporting_marks}</span>{numericSuffix}</>
+                                  ) : c.car_number}
+                                </span>
+                                {c.reporting_marks && (
+                                  <span className="block text-[10px] text-muted-foreground font-mono">
+                                    {c.reporting_marks} · {numericSuffix ?? c.car_number}
+                                  </span>
+                                )}
+                              </td>
+                              <td className="px-3 py-1.5">
+                                {c.assignment?.fleet_name ?? "—"}
+                              </td>
+                              <td className="px-3 py-1.5 text-muted-foreground">
+                                {c.status ?? "—"}
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   )}
@@ -321,6 +339,45 @@ export default function MoveCars() {
                   </div>
                 </div>
               </div>
+              {/* Selected cars — reporting mark preview */}
+              {(() => {
+                const selectedCars = (railcars ?? []).filter((c) => selected.has(c.id));
+                return (
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">
+                      Selected cars
+                    </div>
+                    <div className="rounded-md border border-dashed border-border/70 bg-muted/20 max-h-[180px] overflow-y-auto">
+                      {selectedCars.length === 0 ? (
+                        <div className="px-3 py-3 text-xs text-muted-foreground italic">None selected</div>
+                      ) : (
+                        <div className="divide-y divide-border/40">
+                          {selectedCars.map((c) => {
+                            const numSuffix = c.reporting_marks && c.car_number.toUpperCase().startsWith(c.reporting_marks.toUpperCase())
+                              ? c.car_number.slice(c.reporting_marks.length)
+                              : null;
+                            return (
+                              <div key={c.id} className="flex items-center justify-between px-3 py-1.5 gap-2">
+                                <span className="font-mono font-semibold text-xs text-foreground tracking-wide">
+                                  {c.reporting_marks && numSuffix !== null ? (
+                                    <><span className="text-primary">{c.reporting_marks}</span>{numSuffix}</>
+                                  ) : c.car_number}
+                                </span>
+                                {c.reporting_marks && (
+                                  <span className="text-[10px] text-muted-foreground font-mono shrink-0">
+                                    {c.reporting_marks} · {numSuffix ?? c.car_number}
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
+
               {newFleetName && (
                 <div className="text-xs">
                   <span className="text-muted-foreground">New lessee name: </span>
