@@ -1,0 +1,1252 @@
+import { useMemo, useState, useCallback } from "react";
+import { useCanEdit } from "@/lib/AuthContext";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import PageHeader from "@/components/PageHeader";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetDescription,
+} from "@/components/ui/sheet";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Search, Plus, Trash2, Pencil, ArrowUpDown, ChevronRight, Wrench, Hash, CheckSquare, Square, X as XIcon, ChevronDown } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { cn } from "@/lib/utils";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
+import type { RailcarWithAssignment } from "@shared/schema";
+
+type Row = RailcarWithAssignment;
+
+const TRANSIT_STATUSES = [
+  { value: "repair", label: "At Repair Shop", color: "bg-orange-500/15 text-orange-400 border-orange-500/25" },
+  { value: "transit", label: "In Transit", color: "bg-blue-500/15 text-blue-400 border-blue-500/25" },
+  { value: "cleaning", label: "Cleaning / Prep", color: "bg-purple-500/15 text-purple-400 border-purple-500/25" },
+  { value: "bad_order", label: "Bad Order", color: "bg-red-500/15 text-red-400 border-red-500/25" },
+] as const;
+
+// Entity ownership badge
+const ENTITY_STYLES: Record<string, { label: string; cls: string }> = {
+  "Rail Partners Select": { label: "RPS",   cls: "bg-violet-500/15 text-violet-300 border-violet-500/30 font-semibold" },
+  "Main":                 { label: "OWNED", cls: "bg-sky-500/15 text-sky-300 border-sky-500/30 font-semibold" },
+  "Coal":                 { label: "COAL",  cls: "bg-zinc-500/15 text-zinc-300 border-zinc-500/30 font-semibold" },
+};
+
+// Fixed status options for the filter dropdown
+const STATUS_OPTIONS = [
+  { value: "Active/In-Service", label: "Active / In-Service" },
+  { value: "Storage",           label: "Storage" },
+  { value: "Bad Order",         label: "Bad Order" },
+  { value: "Off-Lease",         label: "Off-Lease" },
+  { value: "Retired",           label: "Retired" },
+  { value: "Scrapped",          label: "Scrapped" },
+];
+
+function EntityBadge({ entity, size = "sm" }: { entity: string | null | undefined; size?: "sm" | "lg" }) {
+  if (!entity) return null;
+  const style = ENTITY_STYLES[entity] ?? { label: entity, cls: "bg-muted text-muted-foreground border-border" };
+  return (
+    <span className={cn(
+      "inline-flex items-center rounded border px-1.5 py-0.5 tracking-wide uppercase",
+      size === "lg" ? "text-[11px] px-2 py-1" : "text-[10px]",
+      style.cls
+    )}>
+      {style.label}
+    </span>
+  );
+}
+
+function TransitBadge({ status, label }: { status: string | null; label: string | null }) {
+  if (!status) return null;
+  const ts = TRANSIT_STATUSES.find((t) => t.value === status);
+  const color = ts?.color ?? "bg-muted text-muted-foreground border-border";
+  const text = ts?.label ?? status;
+  return (
+    <span className={cn("inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-medium", color)}>
+      <Wrench className="h-2.5 w-2.5" />
+      {text}{label ? ` · ${label}` : ""}
+    </span>
+  );
+}
+
+type SortKey =
+  | "car_number"
+  | "status"
+  | "fleet"
+  | "rider"
+  | "lease"
+  | "expiration";
+
+function fmtDate(d: string | null | undefined) {
+  if (!d) return "—";
+  return new Date(d).toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+  });
+}
+
+const STATUS_BADGE_MAP: Record<string, string> = {
+  "Active/In-Service": "bg-emerald-500/15 text-emerald-400 border-emerald-500/25",
+  "Storage":           "bg-amber-500/15 text-amber-400 border-amber-500/25",
+  "Bad Order":         "bg-red-500/15 text-red-400 border-red-500/25",
+  "Off-Lease":         "bg-sky-500/15 text-sky-400 border-sky-500/25",
+  "Retired":           "bg-zinc-500/15 text-zinc-400 border-zinc-500/25",
+  "Scrapped":          "bg-zinc-500/15 text-zinc-400 border-zinc-500/25",
+};
+
+function StatusBadge({ status }: { status: string | null | undefined }) {
+  if (!status) return <span className="text-muted-foreground">—</span>;
+  const cls = STATUS_BADGE_MAP[status] ?? "bg-muted text-muted-foreground border-border";
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider",
+        cls
+      )}
+    >
+      {status}
+    </span>
+  );
+}
+
+export default function FleetRegistry() {
+  const canEdit = useCanEdit();
+  const [search, setSearch] = useState("");
+  const [riderFilter, setRiderFilter] = useState<string>("all");
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({
+    key: "car_number",
+    dir: "asc",
+  });
+  const [openCarId, setOpenCarId] = useState<number | null>(null);
+  const [editCar, setEditCar] = useState<Row | null>(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const [transitFilter, setTransitFilter] = useState<string>("all");
+  const [entityFilter, setEntityFilter] = useState<string>("all");
+  // Multi-select state
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [bulkStatusPending, setBulkStatusPending] = useState(false);
+  const [bulkRiderPending, setBulkRiderPending] = useState(false);
+  const [bulkTransitPending, setBulkTransitPending] = useState(false);
+  const { toast } = useToast();
+
+  const { data: railcars, isLoading } = useQuery<Row[]>({
+    queryKey: ["/api/railcars"],
+  });
+  const { data: riders } = useQuery<any[]>({ queryKey: ["/api/riders"] });
+
+  const filtered = useMemo(() => {
+    let rows = railcars ?? [];
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      rows = rows.filter(
+        (r) =>
+          r.car_number.toLowerCase().includes(q) ||
+          r.reporting_marks?.toLowerCase().includes(q) ||
+          r.assignment?.fleet_name?.toLowerCase().includes(q)
+      );
+    }
+    if (statusFilter !== "all") rows = rows.filter((r) => r.status === statusFilter);
+    if (transitFilter === "in_transit") rows = rows.filter((r) => !!r.transit_status);
+    if (transitFilter === "normal") rows = rows.filter((r) => !r.transit_status);
+    if (entityFilter !== "all") rows = rows.filter((r) => (r as any).entity === entityFilter);
+    if (riderFilter !== "all")
+      rows = rows.filter((r) => String(r.assignment?.rider_id ?? "") === riderFilter);
+
+    const getKey = (r: Row): string => {
+      switch (sort.key) {
+        case "car_number":
+          return r.car_number;
+        case "status":
+          return r.status ?? "";
+        case "fleet":
+          return r.assignment?.fleet_name ?? "";
+        case "rider":
+          return r.assignment?.rider?.rider_name ?? "";
+        case "lease":
+          return r.assignment?.rider?.master_lease?.lease_number ?? "";
+        case "expiration":
+          return r.assignment?.rider?.expiration_date ?? "";
+      }
+    };
+    rows = [...rows].sort((a, b) => {
+      const av = getKey(a);
+      const bv = getKey(b);
+      if (av < bv) return sort.dir === "asc" ? -1 : 1;
+      if (av > bv) return sort.dir === "asc" ? 1 : -1;
+      return 0;
+    });
+
+    return rows;
+  }, [railcars, search, statusFilter, riderFilter, transitFilter, entityFilter, sort]);
+
+  // ── Multi-select helpers ──────────────────────────────────────────────────
+  const allFilteredIds = filtered.map((r) => r.id);
+  const allSelected = allFilteredIds.length > 0 && allFilteredIds.every((id) => selectedIds.has(id));
+  const someSelected = allFilteredIds.some((id) => selectedIds.has(id)) && !allSelected;
+
+  const toggleOne = useCallback((id: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }, []);
+
+  const toggleAll = useCallback(() => {
+    setSelectedIds((prev) => {
+      const allChecked = allFilteredIds.every((id) => prev.has(id));
+      if (allChecked) {
+        const next = new Set(prev);
+        allFilteredIds.forEach((id) => next.delete(id));
+        return next;
+      } else {
+        return new Set([...prev, ...allFilteredIds]);
+      }
+    });
+  }, [allFilteredIds]);
+
+  const clearSelection = () => setSelectedIds(new Set());
+
+  const bulkUpdateStatus = async (newStatus: string) => {
+    setBulkStatusPending(true);
+    const ids = Array.from(selectedIds);
+    try {
+      await Promise.all(
+        ids.map((id) => apiRequest("PATCH", `/api/railcars/${id}`, { status: newStatus }))
+      );
+      queryClient.invalidateQueries({ queryKey: ["/api/railcars"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/dashboard"] });
+      toast({ title: `${ids.length} car${ids.length !== 1 ? "s" : ""} updated to "${newStatus}"` });
+      clearSelection();
+    } catch (e: any) {
+      toast({ title: "Bulk update failed", description: e.message, variant: "destructive" });
+    } finally {
+      setBulkStatusPending(false);
+    }
+  };
+
+  const bulkUpdateTransit = async (transitStatus: string, label: string) => {
+    setBulkTransitPending(true);
+    const ids = Array.from(selectedIds);
+    try {
+      await Promise.all(
+        ids.map((id) =>
+          apiRequest("PATCH", `/api/railcars/${id}`, {
+            transit_status: transitStatus === "none" ? null : transitStatus,
+            transit_label: transitStatus === "none" ? null : undefined,
+          })
+        )
+      );
+      queryClient.invalidateQueries({ queryKey: ["/api/railcars"] });
+      toast({ title: `${ids.length} car${ids.length !== 1 ? "s" : ""} ${transitStatus === "none" ? "cleared" : `flagged as "${label}"`}` });
+      clearSelection();
+    } catch (e: any) {
+      toast({ title: "Bulk transit update failed", description: e.message, variant: "destructive" });
+    } finally {
+      setBulkTransitPending(false);
+    }
+  };
+
+  const bulkAssignRider = async (riderId: number, riderName: string) => {
+    setBulkRiderPending(true);
+    const ids = Array.from(selectedIds);
+    try {
+      await Promise.all(
+        ids.map((id) =>
+          apiRequest("POST", "/api/move", {
+            car_ids: [id],
+            to_rider_id: riderId,
+            moved_by: "bulk-action",
+            reason: "Bulk assignment from Fleet Registry",
+          })
+        )
+      );
+      queryClient.invalidateQueries({ queryKey: ["/api/railcars"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/history"] });
+      toast({ title: `${ids.length} car${ids.length !== 1 ? "s" : ""} moved to "${riderName}"` });
+      clearSelection();
+    } catch (e: any) {
+      toast({ title: "Bulk move failed", description: e.message, variant: "destructive" });
+    } finally {
+      setBulkRiderPending(false);
+    }
+  };
+
+  const toggleSort = (key: SortKey) =>
+    setSort((prev) =>
+      prev.key === key
+        ? { key, dir: prev.dir === "asc" ? "desc" : "asc" }
+        : { key, dir: "asc" }
+    );
+
+  const openCar = filtered.find((r) => r.id === openCarId) ?? null;
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: number) => {
+      await apiRequest("DELETE", `/api/railcars/${id}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/railcars"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/dashboard"] });
+      toast({ title: "Railcar deleted" });
+      setOpenCarId(null);
+    },
+    onError: (e: Error) =>
+      toast({ title: "Cannot delete", description: e.message, variant: "destructive" }),
+  });
+
+  return (
+    <div>
+      <PageHeader
+        title="Fleet Registry"
+        subtitle="All railcars under management, current assignments, and lease status"
+        actions={
+          canEdit ? (
+            <Button
+              size="sm"
+              onClick={() => setAddOpen(true)}
+              data-testid="button-add-railcar"
+            >
+              <Plus className="h-4 w-4" />
+              Add Railcar
+            </Button>
+          ) : undefined
+        }
+      />
+
+      <div className="px-8 py-6 space-y-4">
+        {/* Filter bar */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="relative flex-1 min-w-[240px] max-w-md">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              data-testid="input-search-railcars"
+              placeholder="Search car number, marks, lessee…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="pl-9"
+            />
+          </div>
+          <Select value={statusFilter} onValueChange={setStatusFilter}>
+            <SelectTrigger className="w-[180px]" data-testid="filter-status">
+              <SelectValue placeholder="Status" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All statuses</SelectItem>
+              {STATUS_OPTIONS.map((s) => (
+                <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={riderFilter} onValueChange={setRiderFilter}>
+            <SelectTrigger className="w-[200px]" data-testid="filter-rider">
+              <SelectValue placeholder="Rider" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All riders</SelectItem>
+              {(riders ?? []).map((r: any) => (
+                <SelectItem key={r.id} value={String(r.id)}>
+                  {r.rider_name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={entityFilter} onValueChange={setEntityFilter}>
+            <SelectTrigger className="w-[160px]">
+              <SelectValue placeholder="Ownership" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All ownership</SelectItem>
+              <SelectItem value="Main">RESIDCO Owned</SelectItem>
+              <SelectItem value="Rail Partners Select">Rail Partners Select (RPS)</SelectItem>
+              <SelectItem value="Coal">Coal</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={transitFilter} onValueChange={setTransitFilter}>
+            <SelectTrigger className="w-[170px]">
+              <SelectValue placeholder="Transit Status" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All cars</SelectItem>
+              <SelectItem value="in_transit">In transit / repair</SelectItem>
+              <SelectItem value="normal">Normal service</SelectItem>
+            </SelectContent>
+          </Select>
+          <div className="text-xs text-muted-foreground ml-auto font-mono-num">
+            {filtered.length} / {railcars?.length ?? 0} cars
+          </div>
+        </div>
+
+        {/* Bulk action toolbar — visible when 1+ cars are selected, admin only */}
+        {canEdit && selectedIds.size > 0 && (
+          <div className="flex items-center gap-3 px-4 py-2.5 rounded-lg border border-primary/30 bg-primary/5">
+            <span className="text-sm font-medium text-foreground">
+              {selectedIds.size} car{selectedIds.size !== 1 ? "s" : ""} selected
+            </span>
+            <div className="flex items-center gap-2 ml-2">
+              {/* Bulk status change */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" disabled={bulkStatusPending} data-testid="bulk-status-dropdown">
+                    Set Status
+                    <ChevronDown className="ml-1 h-3.5 w-3.5" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start">
+                  <DropdownMenuLabel>Change status for selected cars</DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  {STATUS_OPTIONS.map((s) => (
+                    <DropdownMenuItem key={s.value} onSelect={() => bulkUpdateStatus(s.value)}>
+                      {s.label}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+              {/* Bulk transit/repair status */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" disabled={bulkTransitPending} data-testid="bulk-transit-dropdown">
+                    Set Transit Flag
+                    <ChevronDown className="ml-1 h-3.5 w-3.5" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start">
+                  <DropdownMenuLabel>Set transit / repair flag</DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onSelect={() => bulkUpdateTransit("none", "Clear")}>
+                    — Clear flag (normal service)
+                  </DropdownMenuItem>
+                  {TRANSIT_STATUSES.map((t) => (
+                    <DropdownMenuItem key={t.value} onSelect={() => bulkUpdateTransit(t.value, t.label)}>
+                      {t.label}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+              {/* Bulk rider assignment */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" disabled={bulkRiderPending} data-testid="bulk-assign-dropdown">
+                    Assign to Rider
+                    <ChevronDown className="ml-1 h-3.5 w-3.5" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start">
+                  <DropdownMenuLabel>Move selected cars to rider</DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  {(riders ?? []).length === 0 && (
+                    <DropdownMenuItem disabled>No riders available</DropdownMenuItem>
+                  )}
+                  {(riders ?? []).map((r: any) => (
+                    <DropdownMenuItem key={r.id} onSelect={() => bulkAssignRider(r.id, r.rider_name)}>
+                      {r.rider_name}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="ml-auto text-muted-foreground"
+              onClick={clearSelection}
+              data-testid="bulk-clear"
+            >
+              <XIcon className="h-4 w-4 mr-1" />
+              Clear
+            </Button>
+          </div>
+        )}
+
+        {/* Table */}
+        <div className="rounded-lg border border-card-border bg-card overflow-hidden">
+          <div className="overflow-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/40 text-muted-foreground">
+                <tr className="text-left">
+                  <th className="pl-4 pr-2 py-3 w-10">
+                    <Checkbox
+                      checked={allSelected}
+                      data-state={someSelected ? "indeterminate" : allSelected ? "checked" : "unchecked"}
+                      onCheckedChange={toggleAll}
+                      aria-label="Select all visible cars"
+                      data-testid="checkbox-select-all"
+                    />
+                  </th>
+                  <th className="px-4 py-3 font-medium text-[11px] uppercase tracking-wider">Entity</th>
+                  <Th label="Car Number" k="car_number" sort={sort} onClick={toggleSort} />
+                  <th className="px-4 py-3 font-medium text-[11px] uppercase tracking-wider">
+                    Marks
+                  </th>
+                  <th className="px-4 py-3 font-medium text-[11px] uppercase tracking-wider">
+                    Type
+                  </th>
+                  <Th label="Status" k="status" sort={sort} onClick={toggleSort} />
+                  <Th label="Lessee" k="fleet" sort={sort} onClick={toggleSort} />
+                  <Th label="Rider" k="rider" sort={sort} onClick={toggleSort} />
+                  <Th label="Lease" k="lease" sort={sort} onClick={toggleSort} />
+                  <Th label="Expires" k="expiration" sort={sort} onClick={toggleSort} />
+                  <th className="w-10" />
+                </tr>
+              </thead>
+              <tbody>
+                {isLoading ? (
+                  Array.from({ length: 8 }).map((_, i) => (
+                    <tr key={i} className="border-t border-border">
+                      {Array.from({ length: 10 }).map((__, j) => (
+                        <td key={j} className="px-4 py-3">
+                          <Skeleton className="h-4 w-full" />
+                        </td>
+                      ))}
+                    </tr>
+                  ))
+                ) : filtered.length === 0 ? (
+                  <tr>
+                    <td colSpan={10} className="px-4 py-16 text-center text-muted-foreground">
+                      No railcars match these filters.
+                    </td>
+                  </tr>
+                ) : (
+                  filtered.map((r) => (
+                    <tr
+                      key={r.id}
+                      className={cn(
+                        "border-t border-border hover-elevate cursor-pointer",
+                        selectedIds.has(r.id) && "bg-primary/5"
+                      )}
+                      onClick={() => setOpenCarId(r.id)}
+                      data-testid={`row-railcar-${r.id}`}
+                    >
+                      <td className="pl-4 pr-2 py-3" onClick={(e) => toggleOne(r.id, e)}>
+                        <Checkbox
+                          checked={selectedIds.has(r.id)}
+                          onCheckedChange={() => {/* handled by td onClick */}}
+                          aria-label={`Select car ${r.car_number}`}
+                          data-testid={`checkbox-car-${r.id}`}
+                        />
+                      </td>
+                      <td className="px-4 py-3">
+                        <EntityBadge entity={(r as any).entity} />
+                      </td>
+                      <td className="px-4 py-3 font-mono-num font-medium">
+                        {r.car_number}
+                      </td>
+                      <td className="px-4 py-3 font-mono-num text-muted-foreground">
+                        {r.reporting_marks ?? "—"}
+                      </td>
+                      <td className="px-4 py-3 text-muted-foreground">
+                        {r.car_type ?? "—"}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex flex-col gap-1">
+                          <StatusBadge status={r.status} />
+                          {(r as any).sold_to && (
+                            <span className="text-[9px] uppercase tracking-widest font-bold px-1.5 py-0.5 rounded border bg-amber-500/15 text-amber-400 border-amber-500/30 w-fit">
+                              SOLD
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="space-y-1">
+                          <div>{r.assignment?.fleet_name ?? <span className="text-muted-foreground">Unassigned</span>}</div>
+                          {r.transit_status && (
+                            <TransitBadge status={r.transit_status} label={r.transit_label} />
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-muted-foreground">
+                        {r.assignment?.rider?.rider_name ?? "—"}
+                      </td>
+                      <td className="px-4 py-3 font-mono-num text-muted-foreground">
+                        {r.assignment?.rider?.master_lease?.lease_number ?? "—"}
+                      </td>
+                      <td className="px-4 py-3 font-mono-num text-muted-foreground">
+                        {fmtDate(r.assignment?.rider?.expiration_date)}
+                      </td>
+                      <td className="px-4 py-3 text-muted-foreground">
+                        <ChevronRight className="h-4 w-4" />
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      {/* Slide-over */}
+      <Sheet open={!!openCarId} onOpenChange={(o) => !o && setOpenCarId(null)}>
+        <SheetContent side="right" className="w-[480px] sm:max-w-[480px] overflow-y-auto">
+          {openCar && <CarDetail carId={openCar.id} onEdit={() => setEditCar(openCar)} onDelete={() => deleteMutation.mutate(openCar.id)} canEdit={canEdit} />}
+        </SheetContent>
+      </Sheet>
+
+      {/* Edit dialog */}
+      <RailcarFormDialog
+        open={!!editCar}
+        onClose={() => setEditCar(null)}
+        car={editCar}
+      />
+      <RailcarFormDialog
+        open={addOpen}
+        onClose={() => setAddOpen(false)}
+        car={null}
+      />
+    </div>
+  );
+}
+
+function Th({
+  label,
+  k,
+  sort,
+  onClick,
+}: {
+  label: string;
+  k: SortKey;
+  sort: { key: SortKey; dir: "asc" | "desc" };
+  onClick: (k: SortKey) => void;
+}) {
+  const active = sort.key === k;
+  return (
+    <th
+      onClick={() => onClick(k)}
+      className={cn(
+        "px-4 py-3 font-medium text-[11px] uppercase tracking-wider cursor-pointer select-none hover:text-foreground",
+        active && "text-foreground"
+      )}
+    >
+      <span className="inline-flex items-center gap-1">
+        {label}
+        <ArrowUpDown className={cn("h-3 w-3", active ? "opacity-100" : "opacity-40")} />
+      </span>
+    </th>
+  );
+}
+
+function CarDetail({
+  carId,
+  onEdit,
+  onDelete,
+  canEdit,
+}: {
+  carId: number;
+  onEdit: () => void;
+  onDelete: () => void;
+  canEdit: boolean;
+}) {
+  const { toast } = useToast();
+  const [remarkOpen, setRemarkOpen] = useState(false);
+  const { data, isLoading } = useQuery<{
+    railcar: RailcarWithAssignment;
+    history: any[];
+    number_history: any[];
+  }>({
+    queryKey: ["/api/railcars", carId],
+  });
+
+  if (isLoading || !data) {
+    return (
+      <div className="space-y-3 pt-3">
+        <Skeleton className="h-8 w-2/3" />
+        <Skeleton className="h-4 w-full" />
+        <Skeleton className="h-32 w-full" />
+      </div>
+    );
+  }
+  const r = data.railcar;
+
+  return (
+    <div>
+      <SheetHeader>
+        <div className="flex items-center gap-2 mb-1">
+          <span className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">Railcar Detail</span>
+          <EntityBadge entity={(r as any).entity} size="lg" />
+        </div>
+        <SheetTitle className="font-mono-num">{r.car_number}</SheetTitle>
+        <SheetDescription>
+          {r.reporting_marks} · {r.car_type ?? "—"}{(r as any).mechanical_designation ? ` · ${(r as any).mechanical_designation}` : ""}
+        </SheetDescription>
+      </SheetHeader>
+
+      {/* Sold banner */}
+      {(r as any).sold_to && (
+        <div className="mt-4 rounded-md border border-amber-500/30 bg-amber-500/10 px-4 py-3">
+          <div className="flex items-center gap-2 text-xs font-semibold text-amber-400 uppercase tracking-wider">
+            <span className="h-2 w-2 rounded-full bg-amber-400" />
+            SOLD / TRANSFERRED
+          </div>
+          <p className="mt-1 text-xs text-amber-300/90">Sold to: {(r as any).sold_to}</p>
+        </div>
+      )}
+
+      {/* Transit / repair banner */}
+      {r.transit_status && (
+        <div className="mt-4 rounded-md border border-orange-500/30 bg-orange-500/10 px-4 py-3">
+          <div className="flex items-center gap-2 text-xs font-medium text-orange-400">
+            <Wrench className="h-3.5 w-3.5" />
+            <TransitBadge status={r.transit_status} label={null} />
+          </div>
+          {r.transit_label && (
+            <p className="mt-1 text-xs text-orange-300/80">{r.transit_label}</p>
+          )}
+        </div>
+      )}
+
+      <div className="flex gap-2 mt-4">
+        {canEdit && (
+          <Button size="sm" variant="secondary" onClick={onEdit} data-testid="button-edit-car">
+            <Pencil className="h-4 w-4" />
+            Edit
+          </Button>
+        )}
+        {canEdit && (
+          <Button size="sm" variant="outline" onClick={() => setRemarkOpen(true)}>
+            <Hash className="h-3.5 w-3.5" />
+            Change Number
+          </Button>
+        )}
+        {canEdit && (
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button size="sm" variant="destructive" data-testid="button-delete-car">
+                <Trash2 className="h-4 w-4" />
+                Delete
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Delete this railcar?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This cannot be undone. Cars with active assignments cannot be deleted.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction onClick={onDelete}>Delete</AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        )}
+      </div>
+
+      {/* Entity ownership — prominent section */}
+      <div className="mt-5 rounded-md border border-border bg-muted/20 px-4 py-3 flex items-center justify-between">
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Ownership Entity</div>
+          <div className="font-medium text-sm">{(r as any).entity ?? "—"}</div>
+        </div>
+        <EntityBadge entity={(r as any).entity} size="lg" />
+      </div>
+
+      <dl className="grid grid-cols-2 gap-x-4 gap-y-3 mt-5 text-sm">
+        <DetailRow label="Status" value={r.status ?? "—"} />
+        <DetailRow label="Car Type" value={r.car_type ?? "—"} />
+        <DetailRow label="Mech. Designation" value={(r as any).mechanical_designation ?? "—"} />
+        <DetailRow label="General Desc." value={(r as any).general_description ?? "—"} />
+        <DetailRow label="AAR" value={r.aar_designation ?? "—"} />
+        <DetailRow label="DOT" value={r.dot_specification ?? "—"} />
+        <DetailRow label="Capacity (cf)" value={r.capacity_cf ?? "—"} />
+        <DetailRow label="Tare (lbs)" value={r.tare_weight_lbs ?? "—"} />
+        <DetailRow label="Load Limit" value={r.load_limit_lbs ?? "—"} />
+        <DetailRow label="Built" value={r.built_year ?? "—"} />
+        <DetailRow label="Coating" value={(r as any).coating ?? "—"} />
+        <DetailRow label="Lining Material" value={(r as any).lining_material ?? "—"} />
+        <DetailRow label="Lease Type" value={(r as any).lease_type ?? "—"} />
+        <DetailRow label="Managed By" value={(r as any).managed ?? "—"} />
+        <DetailRow label="Managed Category" value={(r as any).managed_category ?? "—"} />
+      </dl>
+
+      {/* Prior reporting marks */}
+      {((r as any).old_car_initial || (r as any).old_car_number) && (
+        <div className="mt-4 rounded-md bg-muted/30 border border-border px-4 py-3">
+          <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Prior Reporting Marks</div>
+          <div className="font-mono text-sm">{(r as any).old_car_initial ?? ""} {(r as any).old_car_number ?? ""}</div>
+        </div>
+      )}
+
+      <div className="mt-6 border-t border-border pt-5">
+        <div className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground mb-3">
+          Current Assignment
+        </div>
+        {r.assignment ? (
+          <div className="rounded-md border border-border bg-muted/30 p-4 space-y-2 text-sm">
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">Lessee</span>
+              <span className="font-medium">{r.assignment.fleet_name ?? "—"}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">Rider</span>
+              <span>{r.assignment.rider?.rider_name ?? "—"}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">Lease</span>
+              <span className="font-mono-num">
+                {r.assignment.rider?.master_lease?.lease_number ?? "—"}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">Expires</span>
+              <span className="font-mono-num">
+                {fmtDate(r.assignment.rider?.expiration_date)}
+              </span>
+            </div>
+          </div>
+        ) : (
+          <div className="text-sm text-muted-foreground italic">Unassigned</div>
+        )}
+      </div>
+
+      <div className="mt-6 border-t border-border pt-5">
+        <div className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground mb-3">
+          Assignment History
+        </div>
+        {data.history.length === 0 ? (
+          <div className="text-sm text-muted-foreground italic">No moves recorded.</div>
+        ) : (
+          <div className="space-y-3">
+            {data.history.map((h: any) => (
+              <div key={h.id} className="text-xs border-l-2 border-primary/50 pl-3 py-1">
+                <div className="font-mono-num text-muted-foreground">
+                  {new Date(h.moved_at).toLocaleString()}
+                </div>
+                <div className="mt-0.5">
+                  <span className="text-muted-foreground">
+                    {h.from_rider?.rider_name ?? "—"}
+                  </span>
+                  <span className="mx-1.5 text-primary">→</span>
+                  <span>{h.to_rider?.rider_name ?? "—"}</span>
+                </div>
+                {(h.from_fleet_name || h.to_fleet_name) && (
+                  <div className="text-muted-foreground mt-0.5">
+                    {h.from_fleet_name ?? "—"} → {h.to_fleet_name ?? "—"}
+                  </div>
+                )}
+                {h.reason && (
+                  <div className="text-muted-foreground italic mt-0.5">{h.reason}</div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Car number history */}
+      {(data.number_history ?? []).length > 0 && (
+        <div className="mt-6 border-t border-border pt-5">
+          <div className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground mb-3 flex items-center gap-1.5">
+            <Hash className="h-3 w-3" /> Reporting Mark History
+          </div>
+          <div className="space-y-2">
+            {data.number_history.map((h: any) => (
+              <div key={h.id} className="text-xs border-l-2 border-amber-500/50 pl-3 py-1">
+                <div className="font-mono-num text-muted-foreground">{new Date(h.changed_at).toLocaleString()}</div>
+                <div className="mt-0.5 font-mono font-medium">
+                  <span className="text-muted-foreground">{h.old_car_number}</span>
+                  <span className="mx-1.5 text-amber-400">→</span>
+                  <span>{h.new_car_number}</span>
+                </div>
+                {h.reason && <div className="text-muted-foreground italic mt-0.5">{h.reason}</div>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {r.notes && (
+        <div className="mt-6 border-t border-border pt-5">
+          <div className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground mb-2">
+            Notes
+          </div>
+          <p className="text-sm whitespace-pre-wrap">{r.notes}</p>
+        </div>
+      )}
+
+      <RemarkChangeDialog
+        open={remarkOpen}
+        onClose={() => setRemarkOpen(false)}
+        carId={carId}
+        currentNumber={r.car_number}
+      />
+    </div>
+  );
+}
+
+function RemarkChangeDialog({
+  open, onClose, carId, currentNumber,
+}: {
+  open: boolean;
+  onClose: () => void;
+  carId: number;
+  currentNumber: string;
+}) {
+  const { toast } = useToast();
+  const [newNumber, setNewNumber] = useState("");
+  const [reason, setReason] = useState("");
+
+  useEffect(() => { if (open) { setNewNumber(""); setReason(""); } }, [open]);
+
+  const save = useMutation({
+    mutationFn: async () => {
+      const res = await fetch(`/api/railcars/${carId}/change-number`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ new_car_number: newNumber.trim().toUpperCase(), reason: reason || null }),
+      });
+      if (!res.ok) { const e = await res.json(); throw new Error(e.message); }
+      return res.json();
+    },
+    onSuccess: (d: any) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/railcars"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/railcars", carId] });
+      toast({ title: `Car number changed: ${d.old_car_number} → ${d.new_car_number}` });
+      onClose();
+    },
+    onError: (e: Error) => toast({ title: "Change failed", description: e.message, variant: "destructive" }),
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Change Reporting Mark / Car Number</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3 text-sm">
+          <div className="rounded-md bg-muted/40 px-4 py-3">
+            <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">Current number</div>
+            <div className="font-mono font-semibold">{currentNumber}</div>
+          </div>
+          <p className="text-xs text-muted-foreground">All car attributes (type, coating, capacity, history) are retained. Only the car number / reporting mark changes.</p>
+          <div>
+            <Label>New Car Number <span className="text-destructive">*</span></Label>
+            <Input
+              value={newNumber}
+              onChange={(e) => setNewNumber(e.target.value.toUpperCase())}
+              placeholder="e.g. TEUX10823"
+              className="font-mono"
+            />
+          </div>
+          <div>
+            <Label>Reason</Label>
+            <Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Reporting mark change per lessee request" />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button onClick={() => save.mutate()} disabled={!newNumber.trim() || save.isPending}>
+            {save.isPending ? "Saving…" : "Change Number"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function DetailRow({ label, value }: { label: string; value: any }) {
+  return (
+    <div>
+      <dt className="text-[11px] uppercase tracking-wider text-muted-foreground">
+        {label}
+      </dt>
+      <dd className="font-mono-num mt-0.5">{value}</dd>
+    </div>
+  );
+}
+
+function RailcarFormDialog({
+  open,
+  onClose,
+  car,
+}: {
+  open: boolean;
+  onClose: () => void;
+  car: Row | null;
+}) {
+  const { toast } = useToast();
+  const [form, setForm] = useState(() => ({
+    car_number: car?.car_number ?? "",
+    reporting_marks: car?.reporting_marks ?? "HWCX",
+    car_type: car?.car_type ?? "Hopper",
+    status: car?.status ?? "Active/In-Service",
+    entity: (car as any)?.entity ?? "",
+    coating: (car as any)?.coating ?? "",
+    transit_status: (car as any)?.transit_status ?? "",
+    transit_label: (car as any)?.transit_label ?? "",
+    mechanical_designation: (car as any)?.mechanical_designation ?? "",
+    general_description: (car as any)?.general_description ?? "",
+    lease_type: (car as any)?.lease_type ?? "",
+    managed: (car as any)?.managed ?? "",
+    managed_category: (car as any)?.managed_category ?? "",
+    lining_material: (car as any)?.lining_material ?? "",
+    old_car_initial: (car as any)?.old_car_initial ?? "",
+    old_car_number: (car as any)?.old_car_number ?? "",
+    notes: car?.notes ?? "",
+  }));
+
+  // reset when opening
+  useMemoReset(open, car, setForm);
+
+  const save = useMutation({
+    mutationFn: async () => {
+      if (car) {
+        await apiRequest("PATCH", `/api/railcars/${car.id}`, form);
+      } else {
+        await apiRequest("POST", `/api/railcars`, form);
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/railcars"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/dashboard"] });
+      toast({ title: car ? "Railcar updated" : "Railcar created" });
+      onClose();
+    },
+    onError: (e: Error) =>
+      toast({ title: "Save failed", description: e.message, variant: "destructive" }),
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{car ? "Edit Railcar" : "Add Railcar"}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div>
+            <Label>Car Number</Label>
+            <Input
+              value={form.car_number}
+              onChange={(e) => setForm({ ...form, car_number: e.target.value })}
+              disabled={!!car}
+              data-testid="input-car-number"
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label>Reporting Marks</Label>
+              <Input
+                value={form.reporting_marks}
+                onChange={(e) => setForm({ ...form, reporting_marks: e.target.value })}
+              />
+            </div>
+            <div>
+              <Label>Car Type</Label>
+              <Input
+                value={form.car_type}
+                onChange={(e) => setForm({ ...form, car_type: e.target.value })}
+              />
+            </div>
+          </div>
+          <div>
+            <Label>Ownership Entity</Label>
+            <Select
+              value={form.entity || "none"}
+              onValueChange={(v) => setForm({ ...form, entity: v === "none" ? "" : v })}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Select entity" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">— Not set —</SelectItem>
+                <SelectItem value="Main">RESIDCO Owned (Main)</SelectItem>
+                <SelectItem value="Rail Partners Select">Rail Partners Select (RPS)</SelectItem>
+                <SelectItem value="Coal">Coal</SelectItem>
+                <SelectItem value="Main-Coal">Main-Coal</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label>Status</Label>
+              <Select value={form.status} onValueChange={(v) => setForm({ ...form, status: v })}>
+                <SelectTrigger><SelectValue placeholder="Select status" /></SelectTrigger>
+                <SelectContent>
+                  {STATUS_OPTIONS.map((s) => (
+                    <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Coating</Label>
+              <Input value={form.coating} onChange={(e) => setForm({ ...form, coating: e.target.value })} placeholder="e.g. Epoxy, Bare steel" />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label>Mech. Designation</Label>
+              <Input value={form.mechanical_designation} onChange={(e) => setForm({ ...form, mechanical_designation: e.target.value })} placeholder="e.g. LO, GT, HTS" />
+            </div>
+            <div>
+              <Label>Lining Material</Label>
+              <Input value={form.lining_material} onChange={(e) => setForm({ ...form, lining_material: e.target.value })} placeholder="e.g. 26, 28" />
+            </div>
+          </div>
+          <div>
+            <Label>General Description</Label>
+            <Input value={form.general_description} onChange={(e) => setForm({ ...form, general_description: e.target.value })} placeholder="e.g. Covered Hopper" />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label>Lease Type</Label>
+              <Input value={form.lease_type} onChange={(e) => setForm({ ...form, lease_type: e.target.value })} placeholder="e.g. Net Lease, Full Service" />
+            </div>
+            <div>
+              <Label>Managed By</Label>
+              <Input value={form.managed} onChange={(e) => setForm({ ...form, managed: e.target.value })} placeholder="e.g. Trinity, Greenbrier" />
+            </div>
+          </div>
+          <div>
+            <Label>Managed Category</Label>
+            <Input value={form.managed_category} onChange={(e) => setForm({ ...form, managed_category: e.target.value })} placeholder="e.g. Net Lease, ALF Marks" />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label>Prior Car Initial</Label>
+              <Input value={form.old_car_initial} onChange={(e) => setForm({ ...form, old_car_initial: e.target.value })} placeholder="e.g. ADMX" className="font-mono" />
+            </div>
+            <div>
+              <Label>Prior Car Number</Label>
+              <Input value={form.old_car_number} onChange={(e) => setForm({ ...form, old_car_number: e.target.value })} placeholder="e.g. 000006" className="font-mono" />
+            </div>
+          </div>
+          <div>
+            <Label>Transit / Repair Status</Label>
+            <Select
+              value={form.transit_status || "none"}
+              onValueChange={(v) => setForm({ ...form, transit_status: v === "none" ? "" : v })}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Normal service (no flag)" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">Normal service (no flag)</SelectItem>
+                {TRANSIT_STATUSES.map((t) => (
+                  <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          {form.transit_status && form.transit_status !== "none" && (
+            <div>
+              <Label>Transit Identifier</Label>
+              <Input
+                value={form.transit_label}
+                onChange={(e) => setForm({ ...form, transit_label: e.target.value })}
+                placeholder="e.g. COVIA Return, being newly assigned to Total Energies"
+              />
+            </div>
+          )}
+          <div>
+            <Label>Sold / Transferred To</Label>
+            <Input
+              value={form.sold_to ?? ""}
+              onChange={(e) => setForm({ ...form, sold_to: e.target.value })}
+              placeholder="Buyer / transferee company name (leave blank if not sold)"
+            />
+            {form.sold_to?.trim() && (
+              <p className="text-xs text-amber-400 mt-1 flex items-center gap-1">
+                <span className="inline-block w-2 h-2 rounded-full bg-amber-400" />
+                This car will be marked as SOLD
+              </p>
+            )}
+          </div>
+          <div>
+            <Label>Notes</Label>
+            <Textarea
+              value={form.notes}
+              onChange={(e) => setForm({ ...form, notes: e.target.value })}
+              rows={3}
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="secondary" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button onClick={() => save.mutate()} disabled={save.isPending}>
+            {save.isPending ? "Saving…" : car ? "Save" : "Create"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+import { useEffect } from "react";
+function useMemoReset(
+  open: boolean,
+  car: Row | null,
+  setForm: (v: any) => void
+) {
+  useEffect(() => {
+    if (open) {
+      setForm({
+        car_number: car?.car_number ?? "",
+        reporting_marks: car?.reporting_marks ?? "HWCX",
+        car_type: car?.car_type ?? "Hopper",
+        status: car?.status ?? "Active/In-Service",
+        coating: (car as any)?.coating ?? "",
+        transit_status: (car as any)?.transit_status ?? "",
+        transit_label: (car as any)?.transit_label ?? "",
+        notes: car?.notes ?? "",
+        entity: (car as any)?.entity ?? "",
+        car_initial: (car as any)?.car_initial ?? "",
+        mechanical_designation: (car as any)?.mechanical_designation ?? "",
+        general_description: (car as any)?.general_description ?? "",
+        lease_type: (car as any)?.lease_type ?? "",
+        managed: (car as any)?.managed ?? "",
+        managed_category: (car as any)?.managed_category ?? "",
+        lining_material: (car as any)?.lining_material ?? "",
+        old_car_initial: (car as any)?.old_car_initial ?? "",
+        old_car_number: (car as any)?.old_car_number ?? "",
+        sold_to: (car as any)?.sold_to ?? "",
+        active: (car as any)?.active ?? true,
+      });
+    }
+  }, [open, car, setForm]);
+}
