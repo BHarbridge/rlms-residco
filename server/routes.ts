@@ -1193,6 +1193,33 @@ export async function registerRoutes(
   // entity_type: 'master_lease' | 'rider' | 'railcar'
   // entity_id: the primary key of the linked record
 
+  // GET /api/attachments/:id/download — stream file directly (must be BEFORE /:entityType/:entityId to avoid route conflict)
+  app.get("/api/attachments/:id/download", async (req, res) => {
+    try {
+      const user = await getAuthUser(req, res);
+      if (!user) return;
+      const { id } = req.params;
+      const { data: att, error: fetchErr } = await supabase
+        .from("attachments")
+        .select("storage_path, file_name")
+        .eq("id", id)
+        .single();
+      if (fetchErr || !att) return res.status(404).json({ error: "Attachment not found" });
+      // Stream file directly through the backend
+      const { data: fileBlob, error: dlErr } = await supabaseAdmin.storage
+        .from(STORAGE_BUCKET)
+        .download(att.storage_path);
+      if (dlErr || !fileBlob) throw dlErr ?? new Error("Could not download file from storage");
+      const arrayBuffer = await fileBlob.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      const isPdf = att.file_name.toLowerCase().endsWith('.pdf');
+      res.setHeader('Content-Type', isPdf ? 'application/pdf' : (fileBlob.type || 'application/octet-stream'));
+      res.setHeader('Content-Disposition', isPdf ? `inline; filename="${att.file_name}"` : `attachment; filename="${att.file_name}"`);
+      res.setHeader('Content-Length', buffer.length);
+      res.send(buffer);
+    } catch (err) { errHandler(res, err); }
+  });
+
   // GET /api/attachments/:entityType/:entityId — list attachments for an entity
   app.get("/api/attachments/:entityType/:entityId", async (req, res) => {
     try {
@@ -1260,33 +1287,6 @@ export async function registerRoutes(
       } catch (err) { errHandler(res, err); }
     }
   );
-
-  // GET /api/attachments/:id/download — generate a signed download URL
-  app.get("/api/attachments/:id/download", async (req, res) => {
-    try {
-      const user = await getAuthUser(req, res);
-      if (!user) return;
-      const { id } = req.params;
-      const { data: att, error: fetchErr } = await supabase
-        .from("attachments")
-        .select("storage_path, file_name")
-        .eq("id", id)
-        .single();
-      if (fetchErr || !att) return res.status(404).json({ error: "Attachment not found" });
-      // Stream file directly through the backend (avoids signed URL key format issues)
-      const { data: fileBlob, error: dlErr } = await supabaseAdmin.storage
-        .from(STORAGE_BUCKET)
-        .download(att.storage_path);
-      if (dlErr || !fileBlob) throw dlErr ?? new Error("Could not download file from storage");
-      const arrayBuffer = await fileBlob.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
-      const isPdf = att.file_name.toLowerCase().endsWith('.pdf');
-      res.setHeader('Content-Type', isPdf ? 'application/pdf' : (fileBlob.type || 'application/octet-stream'));
-      res.setHeader('Content-Disposition', isPdf ? `inline; filename="${att.file_name}"` : `attachment; filename="${att.file_name}"`);
-      res.setHeader('Content-Length', buffer.length);
-      res.send(buffer);
-    } catch (err) { errHandler(res, err); }
-  });
 
   // DELETE /api/attachments/:id — delete an attachment (admin only)
   app.delete("/api/attachments/:id", async (req, res) => {
