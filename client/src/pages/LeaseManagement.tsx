@@ -115,16 +115,36 @@ export default function LeaseManagement() {
   const [editRider, setEditRider] = useState<any | null>(null);
   const { toast } = useToast();
 
+  // Parse ?rider= deep-link param
+  const targetRiderId = typeof window !== "undefined"
+    ? Number(new URLSearchParams(window.location.search).get("rider")) || null
+    : null;
+
   const { data: leases, isLoading } = useQuery<MasterLeaseWithRiders[]>({
     queryKey: ["/api/leases"],
   });
 
-  // Auto-expand the first lease on initial load
+  // Auto-expand: deep-link rider takes priority, otherwise expand first lease
   useEffect(() => {
-    if (leases && leases.length && expandedLeases.size === 0) {
+    if (!leases || !leases.length) return;
+    if (targetRiderId) {
+      // Find the MLA that contains this rider
+      const parentLease = leases.find((l) =>
+        l.riders?.some((r: any) => r.id === targetRiderId)
+      );
+      if (parentLease) {
+        setExpandedLeases(new Set([parentLease.id]));
+        setExpandedRiders(new Set([targetRiderId]));
+        // Scroll to the rider row after a short render delay
+        setTimeout(() => {
+          const el = document.getElementById(`rider-row-${targetRiderId}`);
+          if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+        }, 300);
+      }
+    } else if (expandedLeases.size === 0) {
       setExpandedLeases(new Set([leases[0].id]));
     }
-  }, [leases]);
+  }, [leases, targetRiderId]);
 
   const toggleLease = (id: number) =>
     setExpandedLeases((s) => {
@@ -323,7 +343,11 @@ export default function LeaseManagement() {
                         return (
                           <div key={rider.id}>
                             <div
-                              className="px-5 py-3 flex items-center gap-4 cursor-pointer hover-elevate"
+                              id={`rider-row-${rider.id}`}
+                              className={cn(
+                                "px-5 py-3 flex items-center gap-4 cursor-pointer hover-elevate transition-colors",
+                                targetRiderId === rider.id && "ring-1 ring-primary/40 bg-primary/5 rounded"
+                              )}
                               onClick={() => toggleRider(rider.id)}
                               data-testid={`rider-row-${rider.id}`}
                             >

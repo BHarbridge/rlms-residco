@@ -677,25 +677,26 @@ export default function Dashboard() {
                   const months = monthsUntil(r.expiration_date);
                   const tone = expiryTone(months);
                   return (
-                    <div
+                    <a
                       key={r.rider_id}
-                      className="px-5 py-4 flex items-center justify-between gap-4"
+                      href={`/leases?rider=${r.rider_id}`}
+                      className="px-5 py-4 flex items-center justify-between gap-4 hover:bg-muted/40 transition-colors cursor-pointer group"
                       data-testid={`rider-timeline-${r.rider_id}`}
                     >
                       <div className="flex items-center gap-3 min-w-0">
                         <span className={cn("h-2 w-2 rounded-full shrink-0", tone.dot)} />
                         <div className="min-w-0">
-                          <div className="text-sm font-medium truncate">{r.rider_name}</div>
+                          <div className="text-sm font-medium truncate group-hover:text-primary transition-colors">{r.rider_name}</div>
                           <div className="text-[11px] text-muted-foreground font-mono-num">
                             {r.lease_number ?? "—"} · {r.car_count} cars
                           </div>
                         </div>
                       </div>
-                      <div className="text-right">
+                      <div className="text-right shrink-0">
                         <div className="text-sm font-mono-num">{formatDate(r.expiration_date)}</div>
                         <div className={cn("text-[11px] font-mono-num", tone.cls)}>{tone.label}</div>
                       </div>
-                    </div>
+                    </a>
                   );
                 })
               )}
