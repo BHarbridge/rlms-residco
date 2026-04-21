@@ -10,19 +10,19 @@ export default function PageHeader({
   actions?: ReactNode;
 }) {
   return (
-    <div className="px-8 pt-7 pb-5 border-b border-border flex items-end justify-between gap-6 flex-wrap">
+    <div className="px-4 sm:px-8 pt-5 sm:pt-7 pb-4 sm:pb-5 border-b border-border flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3 sm:gap-6">
       <div>
-        <div className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground mb-2">
+        <div className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground mb-1.5">
           RLMS
         </div>
-        <h1 className="text-xl font-semibold tracking-tight" data-testid="text-page-title">
+        <h1 className="text-lg sm:text-xl font-semibold tracking-tight" data-testid="text-page-title">
           {title}
         </h1>
         {subtitle && (
-          <p className="text-sm text-muted-foreground mt-1">{subtitle}</p>
+          <p className="text-xs sm:text-sm text-muted-foreground mt-1">{subtitle}</p>
         )}
       </div>
-      {actions && <div className="flex gap-2 items-center">{actions}</div>}
+      {actions && <div className="flex gap-2 items-center flex-wrap">{actions}</div>}
     </div>
   );
 }

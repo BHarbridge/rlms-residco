@@ -269,19 +269,19 @@ export default function LeaseManagement() {
       />
 
       {filterExpiring && (
-        <div className="mx-8 mt-1 px-4 py-2.5 rounded-lg border border-warning/30 bg-warning/5 text-sm text-warning flex items-center gap-2">
+        <div className="mx-4 sm:mx-8 mt-1 px-4 py-2.5 rounded-lg border border-warning/30 bg-warning/5 text-sm text-warning flex items-center gap-2">
           <AlertTriangle className="h-4 w-4 shrink-0" />
           Showing riders expiring within 12 months, sorted by closest expiration date
         </div>
       )}
       {filterExpiring6 && (
-        <div className="mx-8 mt-1 px-4 py-2.5 rounded-lg border border-[hsl(var(--error))]/30 bg-[hsl(var(--error))]/5 text-sm text-[hsl(var(--error))] flex items-center gap-2">
+        <div className="mx-4 sm:mx-8 mt-1 px-4 py-2.5 rounded-lg border border-[hsl(var(--error))]/30 bg-[hsl(var(--error))]/5 text-sm text-[hsl(var(--error))] flex items-center gap-2">
           <AlertTriangle className="h-4 w-4 shrink-0" />
           Showing riders expiring within 6 months, sorted by closest expiration date
         </div>
       )}
 
-      <div className="px-8 py-6 space-y-3">
+      <div className="px-4 sm:px-8 py-4 sm:py-6 space-y-3">
         {isLoading ? (
           Array.from({ length: 3 }).map((_, i) => (
             <Skeleton key={i} className="h-24 rounded-lg" />

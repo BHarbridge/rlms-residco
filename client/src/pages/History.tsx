@@ -35,7 +35,7 @@ export default function HistoryPage() {
         subtitle="Full audit trail of every railcar move across the fleet"
       />
 
-      <div className="px-8 py-6 space-y-4">
+      <div className="px-4 sm:px-8 py-4 sm:py-6 space-y-4">
         <div className="flex items-center gap-2">
           <div className="relative flex-1 max-w-md">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />

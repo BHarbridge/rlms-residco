@@ -135,7 +135,7 @@ export default function MoveCars() {
         subtitle="Reassign one or more railcars from one rider to another. Every move is logged."
       />
 
-      <div className="px-8 py-6 grid grid-cols-1 xl:grid-cols-3 gap-5">
+      <div className="px-4 sm:px-8 py-4 sm:py-6 grid grid-cols-1 xl:grid-cols-3 gap-5">
         <div className="xl:col-span-2 space-y-4">
           <Step n={1} title="Select source rider" done={!!fromRiderId}>
             <Select
@@ -411,7 +411,7 @@ export default function MoveCars() {
       </div>
 
       {/* Recent moves */}
-      <div className="px-8 pb-10">
+      <div className="px-4 sm:px-8 pb-10">
         <div className="rounded-lg border border-card-border bg-card overflow-hidden">
           <header className="px-5 py-4 border-b border-border flex items-center justify-between">
             <h2 className="text-sm font-semibold">Recent Moves</h2>

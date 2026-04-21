@@ -201,7 +201,7 @@ export default function Contacts() {
         subtitle="All rider contacts across every lease — searchable in one place"
       />
 
-      <div className="px-8 py-6 space-y-5">
+      <div className="px-4 sm:px-8 py-4 sm:py-6 space-y-5">
         {/* Search */}
         <div className="relative max-w-sm">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />

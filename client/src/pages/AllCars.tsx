@@ -298,7 +298,7 @@ export default function AllCars() {
         subtitle="Complete registry — every car, every field, every assignment"
       />
 
-      <div className="px-8 py-6 space-y-4">
+      <div className="px-4 sm:px-8 py-4 sm:py-6 space-y-4">
         {/* Filters */}
         <div className="flex items-center gap-2 flex-wrap">
           <div className="relative flex-1 min-w-[260px] max-w-md">

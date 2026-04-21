@@ -173,7 +173,7 @@ function FleetDrawer({ fleet, onClose }: { fleet: FleetDetail | null; onClose: (
 
   return (
     <Sheet open={!!fleet} onOpenChange={(o) => !o && onClose()}>
-      <SheetContent side="right" className="w-[560px] sm:max-w-[560px] flex flex-col overflow-hidden p-0">
+      <SheetContent side="right" className="w-full sm:w-[560px] sm:max-w-[560px] flex flex-col overflow-hidden p-0">
         {/* Header */}
         <SheetHeader className="px-6 pt-6 pb-4 border-b border-border shrink-0">
           <SheetTitle className="text-base">{fleet.fleet_name}</SheetTitle>
@@ -297,7 +297,7 @@ function DrillDownDrawer({
 
   return (
     <Sheet open={open} onOpenChange={(o) => !o && onClose()}>
-      <SheetContent side="right" className="w-[520px] sm:max-w-[520px] flex flex-col overflow-hidden p-0">
+      <SheetContent side="right" className="w-full sm:w-[520px] sm:max-w-[520px] flex flex-col overflow-hidden p-0">
         {/* Header */}
         <SheetHeader className="px-6 pt-6 pb-4 border-b border-border shrink-0">
           <SheetTitle className="text-base">{info?.title}</SheetTitle>
@@ -501,9 +501,9 @@ export default function Dashboard() {
         subtitle="Real-time view of the RESIDCO railcar fleet and active leases"
       />
 
-      <div className="px-8 py-7 space-y-7">
+      <div className="px-4 sm:px-8 py-5 sm:py-7 space-y-7">
         {/* KPIs */}
-<div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-3">
+<div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-8 gap-3">
           {isLoading ? (
             Array.from({ length: 6 }).map((_, i) => (
               <Skeleton key={i} className="h-[110px] rounded-lg" />

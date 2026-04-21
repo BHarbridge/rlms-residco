@@ -463,10 +463,10 @@ export default function FleetRegistry() {
         }
       />
 
-      <div className="px-8 py-6 space-y-4">
+      <div className="px-4 sm:px-8 py-4 sm:py-6 space-y-4">
         {/* Filter bar */}
         <div className="flex items-center gap-2 flex-wrap">
-          <div className="relative flex-1 min-w-[240px] max-w-md">
+          <div className="relative flex-1 min-w-[180px] max-w-md">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
               data-testid="input-search-railcars"
@@ -628,8 +628,8 @@ export default function FleetRegistry() {
 
         {/* Table */}
         <div className="rounded-lg border border-card-border bg-card overflow-hidden">
-          <div className="overflow-auto">
-            <table className="w-full text-sm">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm min-w-[700px]">
               <thead className="bg-muted/40 text-muted-foreground">
                 <tr className="text-left">
                   <th className="pl-4 pr-2 py-3 w-10">
@@ -643,10 +643,10 @@ export default function FleetRegistry() {
                   </th>
                   <th className="px-4 py-3 font-medium text-[11px] uppercase tracking-wider">Entity</th>
                   <Th label="Car Number" k="car_number" sort={sort} onClick={toggleSort} />
-                  <th className="px-4 py-3 font-medium text-[11px] uppercase tracking-wider">
+                  <th className="px-4 py-3 font-medium text-[11px] uppercase tracking-wider hidden sm:table-cell">
                     Marks
                   </th>
-                  <th className="px-4 py-3 font-medium text-[11px] uppercase tracking-wider">
+                  <th className="px-4 py-3 font-medium text-[11px] uppercase tracking-wider hidden sm:table-cell">
                     Type
                   </th>
                   <Th label="Status" k="status" sort={sort} onClick={toggleSort} />
@@ -699,10 +699,10 @@ export default function FleetRegistry() {
                       <td className="px-4 py-3 font-mono-num font-medium">
                         {r.car_number}
                       </td>
-                      <td className="px-4 py-3 font-mono-num text-muted-foreground">
+                      <td className="px-4 py-3 font-mono-num text-muted-foreground hidden sm:table-cell">
                         {r.reporting_marks ?? "—"}
                       </td>
-                      <td className="px-4 py-3 text-muted-foreground">
+                      <td className="px-4 py-3 text-muted-foreground hidden sm:table-cell">
                         {r.car_type ?? "—"}
                       </td>
                       <td className="px-4 py-3">
@@ -803,7 +803,7 @@ export default function FleetRegistry() {
       </Dialog>
 
       <Sheet open={!!openCarId} onOpenChange={(o) => !o && setOpenCarId(null)}>
-        <SheetContent side="right" className="w-[480px] sm:max-w-[480px] overflow-y-auto">
+        <SheetContent side="right" className="w-full sm:w-[480px] sm:max-w-[480px] overflow-y-auto">
           {openCar && <CarDetail carId={openCar.id} onEdit={() => setEditCar(openCar)} onDelete={() => deleteMutation.mutate(openCar.id)} canEdit={canEdit} />}
         </SheetContent>
       </Sheet>
