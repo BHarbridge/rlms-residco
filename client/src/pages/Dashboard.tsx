@@ -65,6 +65,7 @@ type DashboardData = {
     active_assignments: number;
     unassigned_cars: number;
     expiring_12mo: number;
+    expiring_6mo: number;
     riders_count: number;
     utilization_pct: number;
     rps_total: number;
@@ -410,7 +411,7 @@ function KpiCard({
   label: string;
   value: number | string;
   icon: any;
-  accent?: "primary" | "warning" | "success" | "muted";
+  accent?: "primary" | "warning" | "error" | "success" | "muted";
   testId: string;
   onClick?: () => void;
   subtext?: string;
@@ -435,6 +436,7 @@ function KpiCard({
               "h-4 w-4",
               accent === "primary" && "text-primary",
               accent === "warning" && "text-[hsl(var(--warning))]",
+              accent === "error" && "text-[hsl(var(--error))]",
               accent === "success" && "text-[hsl(var(--success))]",
               (!accent || accent === "muted") && "text-muted-foreground"
             )}
@@ -500,7 +502,7 @@ export default function Dashboard() {
 
       <div className="px-8 py-7 space-y-7">
         {/* KPIs */}
-        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+<div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-7 gap-3">
           {isLoading ? (
             Array.from({ length: 6 }).map((_, i) => (
               <Skeleton key={i} className="h-[110px] rounded-lg" />
@@ -551,6 +553,14 @@ export default function Dashboard() {
                   </div>
                 </div>
               </button>
+              <KpiCard
+                testId="kpi-expiring6"
+                label="Expiring <6mo"
+                value={data.kpis.expiring_6mo}
+                icon={AlertTriangle}
+                accent="error"
+                onClick={() => navigate("/leases?filter=expiring6")}
+              />
               <KpiCard
                 testId="kpi-expiring"
                 label="Expiring <12mo"

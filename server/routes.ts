@@ -184,12 +184,20 @@ export async function registerRoutes(
       const twelveMo = new Date(now);
       twelveMo.setMonth(twelveMo.getMonth() + 12);
 
+      const sixMo = new Date(now);
+      sixMo.setMonth(sixMo.getMonth() + 6);
+
       const expiringRiders = riders.filter((r) => {
         if (!r.expiration_date) return false;
         const d = new Date(r.expiration_date);
         return d <= twelveMo && d >= now;
       });
       const expiring12mo = expiringRiders.length;
+      const expiring6mo = riders.filter((r) => {
+        if (!r.expiration_date) return false;
+        const d = new Date(r.expiration_date);
+        return d <= sixMo && d >= now;
+      }).length;
 
       // Assigned car detail list for KPI drill-down
       const assignedCarList = railcars.filter((r: any) => assignedCarIds.has(r.id));
@@ -283,6 +291,7 @@ export async function registerRoutes(
           active_assignments: activeAssignments,
           unassigned_cars: unassignedCars,
           expiring_12mo: expiring12mo,
+          expiring_6mo: expiring6mo,
           riders_count: riders.length,
           utilization_pct: utilization,
           rps_total: rpsCars.length,

@@ -126,6 +126,9 @@ export default function LeaseManagement() {
   const filterExpiring = typeof window !== "undefined"
     ? new URLSearchParams(window.location.search).get("filter") === "expiring"
     : false;
+  const filterExpiring6 = typeof window !== "undefined"
+    ? new URLSearchParams(window.location.search).get("filter") === "expiring6"
+    : false;
 
   const { data: leases, isLoading } = useQuery<MasterLeaseWithRiders[]>({
     queryKey: ["/api/leases"],
@@ -168,10 +171,27 @@ export default function LeaseManagement() {
       const riderIds = new Set(expiringRiders.map((r) => r.id));
       setExpandedLeases(parentLeaseIds);
       setExpandedRiders(riderIds);
+    } else if (filterExpiring6) {
+      // Expand only MLAs/riders expiring within 6 months, sorted by closest expiration
+      const now = new Date();
+      const cutoff6 = new Date(now);
+      cutoff6.setMonth(cutoff6.getMonth() + 6);
+      const expiring6Riders = leases
+        .flatMap((l) => (l.riders ?? []).map((r: any) => ({ ...r, leaseId: l.id })))
+        .filter((r) => {
+          if (!r.expiration_date) return false;
+          const d = new Date(r.expiration_date);
+          return d >= now && d <= cutoff6;
+        })
+        .sort((a, b) => new Date(a.expiration_date).getTime() - new Date(b.expiration_date).getTime());
+      const parentLeaseIds6 = new Set(expiring6Riders.map((r) => r.leaseId));
+      const riderIds6 = new Set(expiring6Riders.map((r) => r.id));
+      setExpandedLeases(parentLeaseIds6);
+      setExpandedRiders(riderIds6);
     } else if (expandedLeases.size === 0) {
       setExpandedLeases(new Set([leases[0].id]));
     }
-  }, [leases, targetRiderId, filterRiders, filterExpiring]);
+  }, [leases, targetRiderId, filterRiders, filterExpiring, filterExpiring6]);
 
   const toggleLease = (id: number) =>
     setExpandedLeases((s) => {
@@ -252,6 +272,12 @@ export default function LeaseManagement() {
         <div className="mx-8 mt-1 px-4 py-2.5 rounded-lg border border-warning/30 bg-warning/5 text-sm text-warning flex items-center gap-2">
           <AlertTriangle className="h-4 w-4 shrink-0" />
           Showing riders expiring within 12 months, sorted by closest expiration date
+        </div>
+      )}
+      {filterExpiring6 && (
+        <div className="mx-8 mt-1 px-4 py-2.5 rounded-lg border border-[hsl(var(--error))]/30 bg-[hsl(var(--error))]/5 text-sm text-[hsl(var(--error))] flex items-center gap-2">
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          Showing riders expiring within 6 months, sorted by closest expiration date
         </div>
       )}
 
