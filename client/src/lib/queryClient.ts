@@ -42,7 +42,10 @@ export const getQueryFn: <T>(options: {
 }) => QueryFunction<T> =
   ({ on401: unauthorizedBehavior }) =>
   async ({ queryKey }) => {
-    const res = await fetch(`${API_BASE}${queryKey.join("/")}`);
+    const headers: Record<string, string> = {};
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session?.access_token) headers["Authorization"] = `Bearer ${session.access_token}`;
+    const res = await fetch(`${API_BASE}${queryKey.join("/")}`, { headers });
 
     if (unauthorizedBehavior === "returnNull" && res.status === 401) {
       return null;

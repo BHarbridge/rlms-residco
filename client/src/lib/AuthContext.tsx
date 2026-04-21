@@ -33,7 +33,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // Fetch role from our Express backend (which checks user_roles table)
   async function fetchRole(token: string): Promise<Role> {
     try {
-      const res = await fetch("/api/auth/me", {
+      const RENDER_API = (import.meta.env.VITE_API_BASE as string) || "";
+      const res = await fetch(`${RENDER_API}/api/auth/me`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) return null;
