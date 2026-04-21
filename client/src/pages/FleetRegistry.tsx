@@ -1216,32 +1216,52 @@ function RailcarFormDialog({
           <DialogTitle>{car ? "Edit Railcar" : "Add Railcar"}</DialogTitle>
         </DialogHeader>
         <div className="space-y-3 overflow-y-auto pr-1" style={{ maxHeight: 'calc(80vh - 120px)' }}>
-          <div>
-            <Label>Car Number</Label>
-            <Input
-              value={form.car_number}
-              onChange={(e) => setForm({ ...form, car_number: e.target.value })}
-              disabled={!!car}
-              data-testid="input-car-number"
-            />
+          {/* ── Car ID block with live preview ─────────────────────────────── */}
+          <div className="rounded-md border border-border bg-muted/20 p-3 space-y-2.5">
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">Car Identification</div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">Initial <span className="text-[10px] text-muted-foreground font-normal">(alpha prefix)</span></Label>
+                <Input
+                  value={form.reporting_marks}
+                  onChange={(e) => setForm({ ...form, reporting_marks: e.target.value.toUpperCase() })}
+                  placeholder="e.g. HWCX"
+                  className="font-mono uppercase"
+                  disabled={!!car}
+                  data-testid="input-reporting-marks"
+                />
+              </div>
+              <div>
+                <Label className="text-xs">Number <span className="text-[10px] text-muted-foreground font-normal">(digits)</span></Label>
+                <Input
+                  value={form.car_number}
+                  onChange={(e) => setForm({ ...form, car_number: e.target.value })}
+                  placeholder="e.g. 123456"
+                  className="font-mono"
+                  disabled={!!car}
+                  data-testid="input-car-number"
+                />
+              </div>
+            </div>
+            {/* Live preview */}
+            <div className="flex items-center gap-2 rounded border border-dashed border-border/60 bg-background/60 px-3 py-2">
+              <span className="text-[10px] uppercase tracking-wider text-muted-foreground shrink-0">Full Reporting Mark:</span>
+              <span className={"font-mono font-semibold text-sm tracking-wide " + (form.reporting_marks || form.car_number ? "text-foreground" : "text-muted-foreground")}>
+                {form.reporting_marks || form.car_number
+                  ? `${form.reporting_marks ?? ""}${form.car_number ?? ""}`
+                  : "HWCX123456"}
+              </span>
+              {!form.reporting_marks && !form.car_number && (
+                <span className="text-[10px] text-muted-foreground italic">(example)</span>
+              )}
+            </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <Label>Reporting Marks <span className="text-[10px] text-muted-foreground font-normal">(alpha prefix, e.g. HWCX)</span></Label>
-              <Input
-                value={form.reporting_marks}
-                onChange={(e) => setForm({ ...form, reporting_marks: e.target.value.toUpperCase() })}
-                placeholder="e.g. HWCX"
-                className="font-mono"
-              />
-            </div>
-            <div>
-              <Label>Car Type</Label>
-              <Input
-                value={form.car_type}
-                onChange={(e) => setForm({ ...form, car_type: e.target.value })}
-              />
-            </div>
+          <div>
+            <Label>Car Type</Label>
+            <Input
+              value={form.car_type}
+              onChange={(e) => setForm({ ...form, car_type: e.target.value })}
+            />
           </div>
           <div>
             <Label>Ownership Entity</Label>
