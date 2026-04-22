@@ -51,6 +51,7 @@ import {
   DropdownMenuTrigger,
   DropdownMenuItem,
 } from "@/components/ui/dropdown-menu";
+import { useColumnPrefs } from "@/hooks/use-column-prefs";
 import { cn } from "@/lib/utils";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -560,9 +561,10 @@ function RiderCars({ riderId }: { riderId: number }) {
   });
   const [page, setPage] = useState(0);
   const pageSize = 25;
-  const [visibleCols, setVisibleCols] = useState<Set<RCOptCol>>(new Set());
-  const toggleCol = (k: RCOptCol) =>
-    setVisibleCols((s) => { const n = new Set(s); if (n.has(k)) n.delete(k); else n.add(k); return n; });
+  const LC_DEFAULT_COLS = new Set<string>([]);
+  const { visibleCols: visibleColsRaw, toggleCol, resetCols: resetVisibleCols, prefsLoaded: colPrefsLoaded } =
+    useColumnPrefs("lease_rider_cars", LC_DEFAULT_COLS);
+  const visibleCols = visibleColsRaw as Set<RCOptCol>;
 
   const filtered = (cars ?? []).filter((c) => c.assignment?.rider_id === riderId);
   const total = filtered.length;
@@ -588,9 +590,11 @@ function RiderCars({ riderId }: { riderId: number }) {
                 <button className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors">
                   <Columns3 className="h-3 w-3" />
                   Columns
-                  {visibleCols.size > 0 && (
+                  {!colPrefsLoaded ? (
+                    <span className="h-2.5 w-2.5 rounded-full bg-muted animate-pulse" />
+                  ) : visibleCols.size > 0 ? (
                     <span className="bg-primary text-primary-foreground rounded-full px-1 text-[9px] font-bold">{visibleCols.size}</span>
-                  )}
+                  ) : null}
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-44">
@@ -604,7 +608,7 @@ function RiderCars({ riderId }: { riderId: number }) {
                 {visibleCols.size > 0 && (
                   <>
                     <DropdownMenuSeparator />
-                    <DropdownMenuItem className="text-xs text-muted-foreground" onClick={() => setVisibleCols(new Set())}>Reset</DropdownMenuItem>
+                    <DropdownMenuItem className="text-xs text-muted-foreground" onClick={() => resetVisibleCols()}>Reset</DropdownMenuItem>
                   </>
                 )}
               </DropdownMenuContent>

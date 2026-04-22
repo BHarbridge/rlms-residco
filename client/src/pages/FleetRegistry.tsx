@@ -42,6 +42,7 @@ import {
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Search, Plus, Trash2, Pencil, ArrowUpDown, ChevronRight, Wrench, Hash, CheckSquare, Square, X as XIcon, ChevronDown, Download, Columns3 } from "lucide-react";
+import { useColumnPrefs } from "@/hooks/use-column-prefs";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   DropdownMenu,
@@ -241,13 +242,11 @@ export default function FleetRegistry() {
     { key: "description",   label: "Description" },
     { key: "mech_designation", label: "Mech Desig." },
   ];
-  const [visibleCols, setVisibleCols] = useState<Set<OptCol>>(new Set());
-  const toggleCol = (k: OptCol) =>
-    setVisibleCols((s) => {
-      const n = new Set(s);
-      if (n.has(k)) n.delete(k); else n.add(k);
-      return n;
-    });
+  const FR_DEFAULT_COLS = new Set<string>([]);
+  const { visibleCols: visibleColsRaw, toggleCol, resetCols: resetVisibleCols, prefsLoaded: colPrefsLoaded } =
+    useColumnPrefs("fleet_registry", FR_DEFAULT_COLS);
+  // Cast for backwards compat with existing Set<OptCol> usage in JSX
+  const visibleCols = visibleColsRaw as Set<OptCol>;
 
   const { data: railcars, isLoading } = useQuery<Row[]>({
     queryKey: ["/api/railcars"],
@@ -558,11 +557,13 @@ export default function FleetRegistry() {
               <Button variant="outline" size="sm" className="gap-1.5 text-xs">
                 <Columns3 className="h-3.5 w-3.5" />
                 Columns
-                {visibleCols.size > 0 && (
+                {!colPrefsLoaded ? (
+                  <span className="h-3.5 w-3.5 rounded-full bg-muted animate-pulse" />
+                ) : visibleCols.size > 0 ? (
                   <span className="ml-0.5 bg-primary text-primary-foreground rounded-full px-1.5 py-0.5 text-[10px] font-semibold leading-none">
                     {visibleCols.size}
                   </span>
-                )}
+                ) : null}
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-48">
@@ -582,7 +583,7 @@ export default function FleetRegistry() {
                   <DropdownMenuSeparator />
                   <DropdownMenuItem
                     className="text-xs text-muted-foreground"
-                    onClick={() => setVisibleCols(new Set())}
+                    onClick={() => resetVisibleCols()}
                   >
                     Reset to default
                   </DropdownMenuItem>

@@ -32,6 +32,7 @@ import {
   DropdownMenuItem,
 } from "@/components/ui/dropdown-menu";
 import { Search, ArrowUpDown, ChevronRight, Layers, Columns3 } from "lucide-react";
+import { useColumnPrefs } from "@/hooks/use-column-prefs";
 import { cn } from "@/lib/utils";
 import type { RailcarWithAssignment } from "@shared/schema";
 
@@ -331,12 +332,10 @@ export default function AllCars() {
   const [sort, setSort]               = useState<{ key: SortKey; dir: "asc" | "desc" }>({ key: "car_number", dir: "asc" });
   const [openCar, setOpenCar]         = useState<Row | null>(null);
 
-  // Column visibility — optional cols start hidden by default
-  const [visibleOptional, setVisibleOptional] = useState<Set<ColKey>>(
-    new Set(OPTIONAL_COLS.filter((c) => c.defaultOn).map((c) => c.key))
-  );
-  const toggleOptional = (k: ColKey) =>
-    setVisibleOptional((s) => { const n = new Set(s); if (n.has(k)) n.delete(k); else n.add(k); return n; });
+  // Column visibility — persisted per user via Supabase
+  const DEFAULT_OPTIONAL = new Set<string>(OPTIONAL_COLS.filter((c) => c.defaultOn).map((c) => c.key));
+  const { visibleCols: visibleOptional, toggleCol: toggleOptional, resetCols: resetOptional, prefsLoaded } =
+    useColumnPrefs("all_cars", DEFAULT_OPTIONAL);
 
   // Columns to actually render, in order
   const activeCols = ALL_COLS.filter((c) => !c.optional || visibleOptional.has(c.key));
@@ -453,11 +452,13 @@ export default function AllCars() {
               <Button variant="outline" size="sm" className="gap-1.5 text-xs">
                 <Columns3 className="h-3.5 w-3.5" />
                 Columns
-                {optionalOnCount > 0 && (
+                {!prefsLoaded ? (
+                  <span className="h-3.5 w-3.5 rounded-full bg-muted animate-pulse" />
+                ) : optionalOnCount > 0 ? (
                   <span className="bg-primary text-primary-foreground rounded-full px-1.5 py-0.5 text-[10px] font-semibold leading-none">
                     {optionalOnCount}
                   </span>
-                )}
+                ) : null}
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-52">
@@ -479,7 +480,7 @@ export default function AllCars() {
                   <DropdownMenuSeparator />
                   <DropdownMenuItem
                     className="text-xs text-muted-foreground"
-                    onClick={() => setVisibleOptional(new Set())}
+                    onClick={() => resetOptional()}
                   >
                     Reset to default
                   </DropdownMenuItem>
