@@ -22,6 +22,7 @@ import {
   Calculator,
   Menu,
   X as XIcon,
+  Receipt,
 } from "lucide-react";
 import FreshnessBanner from "@/components/FreshnessBanner";
 import { cn } from "@/lib/utils";
@@ -53,7 +54,8 @@ const mainNav = [
   { href: "/dv",       label: "DV Calculator",    icon: Calculator },
   { href: "/search",   label: "Search",           icon: Search },
   { href: "/contacts", label: "Contacts",          icon: BookUser },
-  { href: "/import",   label: "Bulk Import",      icon: Upload },
+  { href: "/ap",       label: "AP Tracker",        icon: Receipt },
+  { href: "/import",   label: "Bulk Import",       icon: Upload },
 ];
 
 const adminNav = [

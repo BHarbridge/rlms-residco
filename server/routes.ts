@@ -1562,8 +1562,7 @@ export async function registerRoutes(
     } catch (err) { errHandler(res, err); }
   });
 
-  /* ==============================================================
-   *  DV CALCULATOR (AAR Rule 107) — routes
+  /* =======================================================   *  DV CALCULATOR (AAR Rule 107) — routes
    * ============================================================== */
 
   // Freshness banner
@@ -1738,6 +1737,231 @@ export async function registerRoutes(
       const visitor = dvVisitorId(req);
       const { error } = await supabase.from("dv_calculations").delete().eq("id", req.params.id).eq("visitor_id", visitor);
       if (error) throw error; res.json({ ok: true });
+=======
+  // =====================================================================
+  // AP TRACKER — Invoices, Dispute Logs, Communications
+  // =====================================================================
+
+  // Helper to get caller email
+  async function getCallerEmail(userId: string): Promise<string> {
+    const { data } = await supabase.from("user_roles").select("email").eq("user_id", userId).single();
+    return data?.email ?? userId;
+  }
+
+  // GET /api/invoices — list with optional filters
+  app.get("/api/invoices", async (req, res) => {
+    try {
+      let q = supabase.from("invoices").select("*").order("due_date", { ascending: true });
+      if (req.query.status && req.query.status !== "all") q = q.eq("status", req.query.status as string);
+      if (req.query.disputed === "true") q = q.eq("is_disputed", true);
+      if (req.query.lessee) q = q.ilike("lessee_name", `%${req.query.lessee}%`);
+      if (req.query.search) {
+        const s = `%${req.query.search}%`;
+        q = q.or(`invoice_number.ilike.${s},lessee_name.ilike.${s},vendor_name.ilike.${s},repair_description.ilike.${s}`);
+      }
+      const { data, error } = await q;
+      if (error) throw error;
+      res.json(data ?? []);
+    } catch (err) { errHandler(res, err); }
+  });
+
+  // GET /api/invoices/:id — single invoice with dispute logs + communications
+  app.get("/api/invoices/:id", async (req, res) => {
+    try {
+      const { data: inv, error: e1 } = await supabase.from("invoices").select("*").eq("id", req.params.id).single();
+      if (e1) throw e1;
+      const { data: disputes } = await supabase.from("dispute_logs").select("*").eq("invoice_id", req.params.id).order("log_date", { ascending: false });
+      const { data: comms } = await supabase.from("invoice_communications").select("*").eq("invoice_id", req.params.id).order("comm_date", { ascending: false });
+      res.json({ ...inv, dispute_logs: disputes ?? [], communications: comms ?? [] });
+    } catch (err) { errHandler(res, err); }
+  });
+
+  // POST /api/invoices — create
+  app.post("/api/invoices", async (req, res) => {
+    try {
+      const userId = await requireUser(req, res);
+      if (!userId) return;
+      const payload = { ...req.body, created_by: userId, updated_at: new Date().toISOString() };
+      delete payload.id;
+      const { data, error } = await supabase.from("invoices").insert(payload).select().single();
+      if (error) throw error;
+      res.json(data);
+    } catch (err) { errHandler(res, err); }
+  });
+
+  // PATCH /api/invoices/:id — update
+  app.patch("/api/invoices/:id", async (req, res) => {
+    try {
+      const userId = await requireUser(req, res);
+      if (!userId) return;
+      const payload = { ...req.body, updated_at: new Date().toISOString() };
+      delete payload.id;
+      const { data, error } = await supabase.from("invoices").update(payload).eq("id", req.params.id).select().single();
+      if (error) throw error;
+      res.json(data);
+    } catch (err) { errHandler(res, err); }
+  });
+
+  // DELETE /api/invoices/:id
+  app.delete("/api/invoices/:id", async (req, res) => {
+    try {
+      const userId = await requireUser(req, res);
+      if (!userId) return;
+      const { error } = await supabase.from("invoices").delete().eq("id", req.params.id);
+      if (error) throw error;
+      res.json({ success: true });
+    } catch (err) { errHandler(res, err); }
+  });
+
+  // POST /api/invoices/:id/dispute-logs — add dispute entry
+  app.post("/api/invoices/:id/dispute-logs", async (req, res) => {
+    try {
+      const userId = await requireUser(req, res);
+      if (!userId) return;
+      const email = await getCallerEmail(userId);
+      const { log_date, description, outcome } = req.body;
+      if (!description) return res.status(400).json({ error: "description required" });
+      // Mark invoice as disputed
+      await supabase.from("invoices").update({ is_disputed: true, updated_at: new Date().toISOString() }).eq("id", req.params.id);
+      const { data, error } = await supabase.from("dispute_logs").insert({
+        invoice_id: req.params.id,
+        log_date: log_date ?? new Date().toISOString().slice(0, 10),
+        logged_by: email,
+        description,
+        outcome: outcome ?? null,
+      }).select().single();
+      if (error) throw error;
+      res.json(data);
+    } catch (err) { errHandler(res, err); }
+  });
+
+  // DELETE /api/dispute-logs/:id
+  app.delete("/api/dispute-logs/:id", async (req, res) => {
+    try {
+      const userId = await requireUser(req, res);
+      if (!userId) return;
+      const { error } = await supabase.from("dispute_logs").delete().eq("id", req.params.id);
+      if (error) throw error;
+      res.json({ success: true });
+    } catch (err) { errHandler(res, err); }
+  });
+
+  // POST /api/invoices/:id/communications — add comm log entry
+  app.post("/api/invoices/:id/communications", async (req, res) => {
+    try {
+      const userId = await requireUser(req, res);
+      if (!userId) return;
+      const email = await getCallerEmail(userId);
+      const { comm_date, comm_type, contact_name, notes } = req.body;
+      if (!notes) return res.status(400).json({ error: "notes required" });
+      // Update last_communication_date on invoice
+      const dateStr = comm_date ?? new Date().toISOString().slice(0, 10);
+      await supabase.from("invoices").update({
+        last_communication_date: dateStr,
+        last_communication_notes: notes,
+        updated_at: new Date().toISOString()
+      }).eq("id", req.params.id);
+      const { data, error } = await supabase.from("invoice_communications").insert({
+        invoice_id: req.params.id,
+        comm_date: dateStr,
+        comm_type: comm_type ?? "email",
+        contact_name: contact_name ?? null,
+        notes,
+        logged_by: email,
+      }).select().single();
+      if (error) throw error;
+      res.json(data);
+    } catch (err) { errHandler(res, err); }
+  });
+
+  // DELETE /api/communications/:id
+  app.delete("/api/communications/:id", async (req, res) => {
+    try {
+      const userId = await requireUser(req, res);
+      if (!userId) return;
+      const { error } = await supabase.from("invoice_communications").delete().eq("id", req.params.id);
+      if (error) throw error;
+      res.json({ success: true });
+    } catch (err) { errHandler(res, err); }
+  });
+
+  // POST /api/invoices/:id/upload-pdf — upload cover sheet PDF
+  app.post("/api/invoices/:id/upload-pdf", upload.single("file"), async (req, res) => {
+    try {
+      const userId = await requireUser(req, res);
+      if (!userId) return;
+      if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+      const ext = req.file.originalname.split(".").pop() ?? "pdf";
+      const path = `invoices/${req.params.id}/cover-${Date.now()}.${ext}`;
+      const { error: upErr } = await supabaseAdmin.storage.from(STORAGE_BUCKET).upload(path, req.file.buffer, {
+        contentType: req.file.mimetype,
+        upsert: true,
+      });
+      if (upErr) throw upErr;
+      const { data: { publicUrl } } = supabaseAdmin.storage.from(STORAGE_BUCKET).getPublicUrl(path);
+      await supabase.from("invoices").update({ pdf_url: publicUrl, updated_at: new Date().toISOString() }).eq("id", req.params.id);
+      res.json({ pdf_url: publicUrl });
+    } catch (err) { errHandler(res, err); }
+  });
+
+  // GET /api/invoices/export/csv — export full AP report as CSV
+  app.get("/api/invoices/export/csv", async (req, res) => {
+    try {
+      const { data, error } = await supabase.from("invoices").select("*").order("due_date", { ascending: true });
+      if (error) throw error;
+      const rows = data ?? [];
+      const headers = ["Invoice #","Lessee","Vendor","Amount","Amount Paid","Balance","Invoice Date","Due Date","Paid Date","Status","Disputed","Repair Description","Notes","Last Communication","Next Follow-up","PDF URL"];
+      const escape = (v: any) => v == null ? "" : `"${String(v).replace(/"/g, '""')}"`;
+      const csvRows = rows.map(r => [
+        escape(r.invoice_number), escape(r.lessee_name), escape(r.vendor_name),
+        r.amount ?? "", r.amount_paid ?? "", ((r.amount ?? 0) - (r.amount_paid ?? 0)).toFixed(2),
+        r.invoice_date ?? "", r.due_date ?? "", r.paid_date ?? "",
+        escape(r.status), r.is_disputed ? "Yes" : "No",
+        escape(r.repair_description), escape(r.notes),
+        r.last_communication_date ?? "", r.next_followup_date ?? "",
+        escape(r.pdf_url),
+      ].join(","));
+      const csv = [headers.join(","), ...csvRows].join("\n");
+      res.setHeader("Content-Type", "text/csv");
+      res.setHeader("Content-Disposition", 'attachment; filename="ap-report.csv"');
+      res.send(csv);
+    } catch (err) { errHandler(res, err); }
+  });
+
+  // POST /api/invoices/import-csv — bulk import from CSV
+  app.post("/api/invoices/import-csv", upload.single("file"), async (req, res) => {
+    try {
+      const userId = await requireUser(req, res);
+      if (!userId) return;
+      if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+      const text = req.file.buffer.toString("utf-8");
+      const lines = text.split(/\r?\n/).filter(Boolean);
+      if (lines.length < 2) return res.status(400).json({ error: "CSV must have header + data rows" });
+      const parse = (s: string) => s.replace(/^["|']+|["|']+$/g, "").trim();
+      const headers = lines[0].split(",").map(h => h.trim().toLowerCase().replace(/[^a-z0-9]/g, "_"));
+      const toInsert: Record<string, any>[] = [];
+      for (let i = 1; i < lines.length; i++) {
+        const cols = lines[i].split(",");
+        const row: Record<string, any> = {};
+        headers.forEach((h, idx) => { row[h] = parse(cols[idx] ?? ""); });
+        const inv: Record<string, any> = {
+          invoice_number: row["invoice__"] || row["invoice_number"] || `IMP-${Date.now()}-${i}`,
+          lessee_name: row["lessee"] || row["lessee_name"] || "Unknown",
+          vendor_name: row["vendor"] || row["vendor_name"] || null,
+          amount: parseFloat(row["amount"]) || null,
+          amount_paid: parseFloat(row["amount_paid"]) || 0,
+          invoice_date: row["invoice_date"] || null,
+          due_date: row["due_date"] || null,
+          status: row["status"] || "unpaid",
+          repair_description: row["repair_description"] || row["description"] || null,
+          notes: row["notes"] || null,
+          created_by: userId,
+        };
+        toInsert.push(inv);
+      }
+      const { data, error } = await supabase.from("invoices").insert(toInsert).select();
+      if (error) throw error;
+      res.json({ inserted: (data ?? []).length });
     } catch (err) { errHandler(res, err); }
   });
 

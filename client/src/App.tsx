@@ -17,6 +17,7 @@ import AllCars from "@/pages/AllCars";
 import LeaseWizard from "@/pages/LeaseWizard";
 import UserManagement from "@/pages/UserManagement";
 import Contacts from "@/pages/Contacts";
+import APTracker from "@/pages/APTracker";
 import Login from "@/pages/Login";
 import DvNewCalculation from "@/pages/DvCalculator/NewCalculation";
 import DvHistory from "@/pages/DvCalculator/History";
@@ -36,6 +37,7 @@ function AppRouter() {
       <Route path="/search" component={SearchPage} />
       <Route path="/import" component={BulkImportPage} />
       <Route path="/contacts" component={Contacts} />
+      <Route path="/ap" component={APTracker} />
       <Route path="/users" component={UserManagement} />
       <Route path="/dv" component={DvNewCalculation} />
       <Route path="/dv/history" component={DvHistory} />
