@@ -366,7 +366,8 @@ function InvoiceDetailSheet({
     mutationFn: async (file: File) => {
       const fd = new FormData();
       fd.append("file", file);
-      const r = await fetch(`/__PORT_5000__/api/invoices/${invoiceId}/upload-pdf`, { method: "POST", body: fd });
+      const base = ("__PORT_5000__").startsWith("__") ? "" : "__PORT_5000__";
+      const r = await fetch(`${base}/api/invoices/${invoiceId}/upload-pdf`, { method: "POST", body: fd });
       if (!r.ok) throw new Error("Upload failed");
       return r.json();
     },
@@ -806,7 +807,8 @@ export default function APTracker() {
     try {
       const fd = new FormData();
       fd.append("file", file);
-      const r = await fetch("/__PORT_5000__/api/invoices/import-csv", { method: "POST", body: fd });
+      const base = ("__PORT_5000__").startsWith("__") ? "" : "__PORT_5000__";
+      const r = await fetch(`${base}/api/invoices/import-csv`, { method: "POST", body: fd });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error ?? "Import failed");
       invalidate();
@@ -819,7 +821,8 @@ export default function APTracker() {
   }
 
   function exportCsv() {
-    window.open("/__PORT_5000__/api/invoices/export/csv", "_blank");
+    const base = ("__PORT_5000__").startsWith("__") ? "" : "__PORT_5000__";
+    window.open(`${base}/api/invoices/export/csv`, "_blank");
   }
 
   // ── KPIs ──

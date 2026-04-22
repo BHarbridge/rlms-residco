@@ -1737,7 +1737,9 @@ export async function registerRoutes(
       const visitor = dvVisitorId(req);
       const { error } = await supabase.from("dv_calculations").delete().eq("id", req.params.id).eq("visitor_id", visitor);
       if (error) throw error; res.json({ ok: true });
-=======
+    } catch (err) { errHandler(res, err); }
+  });
+
   // =====================================================================
   // AP TRACKER — Invoices, Dispute Logs, Communications
   // =====================================================================
