@@ -164,6 +164,40 @@ function StatusBadge({ status, disputed }: { status: InvoiceStatus; disputed: bo
   );
 }
 
+// ─── Sortable column header ──────────────────────────────────────────────
+function SortTh({
+  label, sortKey, sort, onSort, className = "",
+}: {
+  label: string;
+  sortKey: string;
+  sort: { key: string; dir: "asc" | "desc" };
+  onSort: (k: any) => void;
+  className?: string;
+}) {
+  const active = sort.key === sortKey;
+  return (
+    <th
+      className={cn(
+        "px-4 py-3 font-medium text-[11px] uppercase tracking-wider cursor-pointer select-none hover:text-foreground transition-colors",
+        active ? "text-foreground" : "",
+        className
+      )}
+      onClick={() => onSort(sortKey)}
+    >
+      <span className="flex items-center gap-1">
+        {label}
+        {active ? (
+          sort.dir === "asc"
+            ? <ChevronUp className="h-3 w-3" />
+            : <ChevronDown className="h-3 w-3" />
+        ) : (
+          <span className="opacity-30 text-[10px]">↕</span>
+        )}
+      </span>
+    </th>
+  );
+}
+
 // ─── KPI tiles ────────────────────────────────────────────────────────────
 function KpiTile({
   label, value, sub, icon: Icon, accent = "neutral", onClick,
@@ -761,6 +795,12 @@ export default function APTracker() {
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [importLoading, setImportLoading] = useState(false);
   const [showLesseeStats, setShowLesseeStats] = useState(false);
+  type SortKey = "lessee_name" | "amount" | "balance" | "due_date" | "overdue";
+  const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({ key: "overdue", dir: "desc" });
+
+  function toggleSort(key: SortKey) {
+    setSort(s => s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: key === "overdue" || key === "due_date" ? "desc" : "asc" });
+  }
 
   // Build query params
   const params = new URLSearchParams();
@@ -838,16 +878,40 @@ export default function APTracker() {
 
   const sortedInvoices = useMemo(() => {
     return [...invoices].sort((a, b) => {
-      // Unpaid + overdue first, then by due date ascending
-      const aOvd = daysOverdue(a.due_date);
-      const bOvd = daysOverdue(b.due_date);
-      const aOpen = a.status !== "paid" && a.status !== "closed";
-      const bOpen = b.status !== "paid" && b.status !== "closed";
-      if (aOpen && !bOpen) return -1;
-      if (!aOpen && bOpen) return 1;
-      return bOvd - aOvd;
+      const dir = sort.dir === "asc" ? 1 : -1;
+      switch (sort.key) {
+        case "lessee_name":
+          return dir * a.lessee_name.localeCompare(b.lessee_name);
+        case "amount":
+          return dir * ((a.amount ?? 0) - (b.amount ?? 0));
+        case "balance":
+          return dir * (((a.amount ?? 0) - (a.amount_paid ?? 0)) - ((b.amount ?? 0) - (b.amount_paid ?? 0)));
+        case "due_date":
+          return dir * ((a.due_date ?? "").localeCompare(b.due_date ?? ""));
+        case "overdue":
+        default: {
+          const aOvd = daysOverdue(a.due_date);
+          const bOvd = daysOverdue(b.due_date);
+          const aOpen = a.status !== "paid" && a.status !== "closed";
+          const bOpen = b.status !== "paid" && b.status !== "closed";
+          if (aOpen && !bOpen) return -1;
+          if (!aOpen && bOpen) return 1;
+          return dir * (aOvd - bOvd);
+        }
+      }
     });
-  }, [invoices]);
+  }, [invoices, sort]);
+
+  function downloadTemplate() {
+    const headers = "invoice_number,lessee_name,vendor_name,amount,amount_paid,invoice_date,due_date,status,repair_description,notes";
+    const example = "INV-2025-0001,Acme Freight LLC,RailServ LLC,4500.00,0,2025-01-15,2025-02-15,unpaid,Wheel set replacement – car HWCX010601,Three calls no response";
+    const csv = [headers, example].join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "ap-import-template.csv"; a.click();
+    URL.revokeObjectURL(url);
+  }
 
   return (
     <div className="flex flex-col min-h-0">
@@ -860,6 +924,9 @@ export default function APTracker() {
               <>
                 <Button variant="outline" size="sm" onClick={exportCsv}>
                   <Download className="h-4 w-4 mr-1.5" />Export
+                </Button>
+                <Button variant="outline" size="sm" onClick={downloadTemplate}>
+                  <FileText className="h-4 w-4 mr-1.5" />Template
                 </Button>
                 <Button
                   variant="outline" size="sm"
@@ -960,11 +1027,12 @@ export default function APTracker() {
               <thead className="bg-muted/40 text-muted-foreground">
                 <tr className="text-left">
                   <th className="px-4 py-3 font-medium text-[11px] uppercase tracking-wider">Invoice #</th>
-                  <th className="px-4 py-3 font-medium text-[11px] uppercase tracking-wider">Lessee</th>
+                  <SortTh label="Lessee" sortKey="lessee_name" sort={sort} onSort={toggleSort} />
                   <th className="px-4 py-3 font-medium text-[11px] uppercase tracking-wider hidden sm:table-cell">Vendor</th>
-                  <th className="px-4 py-3 font-medium text-[11px] uppercase tracking-wider">Amount</th>
-                  <th className="px-4 py-3 font-medium text-[11px] uppercase tracking-wider hidden md:table-cell">Balance</th>
-                  <th className="px-4 py-3 font-medium text-[11px] uppercase tracking-wider">Due Date</th>
+                  <SortTh label="Amount" sortKey="amount" sort={sort} onSort={toggleSort} />
+                  <SortTh label="Balance" sortKey="balance" sort={sort} onSort={toggleSort} className="hidden md:table-cell" />
+                  <SortTh label="Due Date" sortKey="due_date" sort={sort} onSort={toggleSort} />
+                  <SortTh label="Overdue" sortKey="overdue" sort={sort} onSort={toggleSort} />
                   <th className="px-4 py-3 font-medium text-[11px] uppercase tracking-wider">Status</th>
                   <th className="px-4 py-3 font-medium text-[11px] uppercase tracking-wider hidden lg:table-cell">Last Contact</th>
                   <th className="px-4 py-3 font-medium text-[11px] uppercase tracking-wider hidden lg:table-cell">Follow-up</th>
