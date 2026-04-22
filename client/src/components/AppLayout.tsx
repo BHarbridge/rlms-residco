@@ -19,9 +19,11 @@ import {
   Eye,
   KeyRound,
   BookUser,
+  Calculator,
   Menu,
   X as XIcon,
 } from "lucide-react";
+import FreshnessBanner from "@/components/FreshnessBanner";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/AuthContext";
 import { supabase } from "@/lib/supabase";
@@ -48,6 +50,7 @@ const mainNav = [
   { href: "/leases",   label: "Lease Management", icon: FileText },
   { href: "/move",     label: "Move Cars",        icon: ArrowRightLeft },
   { href: "/history",  label: "History",          icon: History },
+  { href: "/dv",       label: "DV Calculator",    icon: Calculator },
   { href: "/search",   label: "Search",           icon: Search },
   { href: "/contacts", label: "Contacts",          icon: BookUser },
   { href: "/import",   label: "Bulk Import",      icon: Upload },
@@ -522,7 +525,10 @@ export default function AppLayout({ children }: { children: ReactNode }) {
           </button>
           <GlobalSearch />
         </div>
-        <main className="flex-1 min-w-0 overflow-auto">{children}</main>
+        <main className="flex-1 min-w-0 overflow-auto">
+          <FreshnessBanner />
+          {children}
+        </main>
       </div>
     </div>
   );

@@ -18,6 +18,9 @@ import LeaseWizard from "@/pages/LeaseWizard";
 import UserManagement from "@/pages/UserManagement";
 import Contacts from "@/pages/Contacts";
 import Login from "@/pages/Login";
+import DvNewCalculation from "@/pages/DvCalculator/NewCalculation";
+import DvHistory from "@/pages/DvCalculator/History";
+import DvReference from "@/pages/DvCalculator/Reference";
 import NotFound from "@/pages/not-found";
 
 function AppRouter() {
@@ -34,6 +37,10 @@ function AppRouter() {
       <Route path="/import" component={BulkImportPage} />
       <Route path="/contacts" component={Contacts} />
       <Route path="/users" component={UserManagement} />
+      <Route path="/dv" component={DvNewCalculation} />
+      <Route path="/dv/history" component={DvHistory} />
+      <Route path="/dv/history/:id" component={DvHistory} />
+      <Route path="/dv/reference" component={DvReference} />
       <Route component={NotFound} />
     </Switch>
   );
