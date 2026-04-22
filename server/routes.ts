@@ -92,25 +92,31 @@ function dvParseInputs(body: any, abCodes: Map<string, { rate_basis: AbRateBasis
   };
 }
 
+// Freshness per AAR Office Manual Rule 107.E:
+//   • Cost Factors — Rule 107.E.2 uses the factor for the year PRIOR to the
+//     incident year (e.g. a 2026 incident uses the 2025 factor). Stale only if
+//     the prior-year row is missing.
+//   • Salvage Quarters — quarterly; the current-quarter row must exist.
+//   • A&B Codes — reference-only; no fixed quarterly cadence, so not flagged.
 async function dvComputeFreshness() {
   const now = new Date();
   const year = now.getUTCFullYear();
   const q = Math.floor(now.getUTCMonth() / 3) + 1;
   const quarterCode = year * 10 + q;
-  const [cfRes, sqRes, abRes] = await Promise.all([
-    supabase.from("dv_cost_factors").select("year", { count: "exact", head: false }).eq("year", year),
+  const priorYear = year - 1;
+  const [cfRes, sqRes] = await Promise.all([
+    supabase.from("dv_cost_factors").select("year", { count: "exact", head: false }).eq("year", priorYear),
     supabase.from("dv_salvage_quarters").select("quarter_code", { count: "exact", head: false }).eq("quarter_code", quarterCode),
-    supabase.from("dv_ab_codes").select("publication_q", { count: "exact", head: false }).eq("publication_q", quarterCode),
   ]);
   const stale: string[] = [];
   if (!cfRes.error && (cfRes.data?.length ?? 0) === 0) stale.push("cost_factors");
   if (!sqRes.error && (sqRes.data?.length ?? 0) === 0) stale.push("salvage_quarters");
-  if (!abRes.error && (abRes.data?.length ?? 0) === 0) stale.push("ab_codes");
   return {
     currentYear: year,
     currentQuarter: q,
     currentQuarterCode: quarterCode,
     currentQuarterLabel: `${year} Q${q}`,
+    priorYear,
     staleTables: stale,
     isStale: stale.length > 0,
   };

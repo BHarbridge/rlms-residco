@@ -7,15 +7,17 @@ interface Freshness {
   currentQuarter: number;
   currentQuarterCode: number;
   currentQuarterLabel: string;
+  priorYear: number;
   staleTables: string[];
   isStale: boolean;
 }
 
-const TABLE_LABELS: Record<string, { short: string; what: string }> = {
-  cost_factors: { short: "Cost Factors", what: `new annual cost factor` },
-  salvage_quarters: { short: "Salvage Rates", what: "quarterly scrap & dismantling prices" },
-  ab_codes: { short: "A&B Codes", what: "quarterly A&B rates" },
-};
+function tableLabels(priorYear: number): Record<string, { short: string; what: string }> {
+  return {
+    cost_factors: { short: "Cost Factors", what: `${priorYear} cost factor (Rule 107.E.2 — prior year)` },
+    salvage_quarters: { short: "Salvage Rates", what: "quarterly scrap & dismantling prices" },
+  };
+}
 
 /**
  * Amber warning banner — fires when the current calendar quarter/year has no
@@ -35,10 +37,9 @@ export default function FreshnessBanner({ hideLink }: { hideLink?: boolean } = {
 
   if (!data || !data.isStale) return null;
 
-  const items = data.staleTables.map((t) => TABLE_LABELS[t]?.short || t).join(" · ");
-  const details = data.staleTables
-    .map((t) => TABLE_LABELS[t]?.what || t)
-    .join(", ");
+  const labels = tableLabels(data.priorYear ?? data.currentYear - 1);
+  const items = data.staleTables.map((t) => labels[t]?.short || t).join(" · ");
+  const details = data.staleTables.map((t) => labels[t]?.what || t).join(", ");
 
   return (
     <div
@@ -58,7 +59,7 @@ export default function FreshnessBanner({ hideLink }: { hideLink?: boolean } = {
       </div>
       {!hideLink && (
         <Link
-          href="/dv/reference"
+          href="/reference"
           className="shrink-0 inline-flex items-center gap-1 text-amber-900 dark:text-amber-100 font-medium hover:underline whitespace-nowrap"
           data-testid="link-banner-reference"
         >
