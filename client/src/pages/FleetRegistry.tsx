@@ -41,12 +41,13 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Search, Plus, Trash2, Pencil, ArrowUpDown, ChevronRight, Wrench, Hash, CheckSquare, Square, X as XIcon, ChevronDown, Download } from "lucide-react";
+import { Search, Plus, Trash2, Pencil, ArrowUpDown, ChevronRight, Wrench, Hash, CheckSquare, Square, X as XIcon, ChevronDown, Download, Columns3 } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuCheckboxItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
@@ -227,6 +228,26 @@ export default function FleetRegistry() {
   const [bulkOec, setBulkOec] = useState("");
   const [bulkValuesPending, setBulkValuesPending] = useState(false);
   const { toast } = useToast();
+
+  // ── Optional column visibility ─────────────────────────────────────────────
+  type OptCol = "nbv" | "oac" | "oec" | "capacity_cf" | "lining" | "build_year" | "description" | "mech_designation";
+  const OPT_COLS: { key: OptCol; label: string }[] = [
+    { key: "nbv",           label: "NBV" },
+    { key: "oac",           label: "OAC" },
+    { key: "oec",           label: "OEC" },
+    { key: "capacity_cf",   label: "Capacity (cf)" },
+    { key: "lining",        label: "Lining" },
+    { key: "build_year",    label: "Build Year" },
+    { key: "description",   label: "Description" },
+    { key: "mech_designation", label: "Mech Desig." },
+  ];
+  const [visibleCols, setVisibleCols] = useState<Set<OptCol>>(new Set());
+  const toggleCol = (k: OptCol) =>
+    setVisibleCols((s) => {
+      const n = new Set(s);
+      if (n.has(k)) n.delete(k); else n.add(k);
+      return n;
+    });
 
   const { data: railcars, isLoading } = useQuery<Row[]>({
     queryKey: ["/api/railcars"],
@@ -531,7 +552,45 @@ export default function FleetRegistry() {
               <SelectItem value="offrent">Off Rent</SelectItem>
             </SelectContent>
           </Select>
-          <div className="text-xs text-muted-foreground ml-auto font-mono-num">
+          {/* Column visibility picker */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" className="gap-1.5 text-xs">
+                <Columns3 className="h-3.5 w-3.5" />
+                Columns
+                {visibleCols.size > 0 && (
+                  <span className="ml-0.5 bg-primary text-primary-foreground rounded-full px-1.5 py-0.5 text-[10px] font-semibold leading-none">
+                    {visibleCols.size}
+                  </span>
+                )}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-48">
+              <DropdownMenuLabel className="text-[11px] uppercase tracking-wider text-muted-foreground">Optional columns</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              {OPT_COLS.map(({ key, label }) => (
+                <DropdownMenuCheckboxItem
+                  key={key}
+                  checked={visibleCols.has(key)}
+                  onCheckedChange={() => toggleCol(key)}
+                >
+                  {label}
+                </DropdownMenuCheckboxItem>
+              ))}
+              {visibleCols.size > 0 && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    className="text-xs text-muted-foreground"
+                    onClick={() => setVisibleCols(new Set())}
+                  >
+                    Reset to default
+                  </DropdownMenuItem>
+                </>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <div className="text-xs text-muted-foreground font-mono-num">
             {filtered.length} / {railcars?.length ?? 0} cars
           </div>
         </div>
@@ -654,6 +713,9 @@ export default function FleetRegistry() {
                   <Th label="Rider" k="rider" sort={sort} onClick={toggleSort} />
                   <Th label="Lease" k="lease" sort={sort} onClick={toggleSort} />
                   <Th label="Expires" k="expiration" sort={sort} onClick={toggleSort} />
+                  {OPT_COLS.filter(c => visibleCols.has(c.key)).map(c => (
+                    <th key={c.key} className="px-4 py-3 font-medium text-[11px] uppercase tracking-wider whitespace-nowrap">{c.label}</th>
+                  ))}
                   <th className="w-10" />
                 </tr>
               </thead>
@@ -661,7 +723,7 @@ export default function FleetRegistry() {
                 {isLoading ? (
                   Array.from({ length: 8 }).map((_, i) => (
                     <tr key={i} className="border-t border-border">
-                      {Array.from({ length: 10 }).map((__, j) => (
+                      {Array.from({ length: 10 + visibleCols.size }).map((__, j) => (
                         <td key={j} className="px-4 py-3">
                           <Skeleton className="h-4 w-full" />
                         </td>
@@ -670,7 +732,7 @@ export default function FleetRegistry() {
                   ))
                 ) : filtered.length === 0 ? (
                   <tr>
-                    <td colSpan={10} className="px-4 py-16 text-center text-muted-foreground">
+                    <td colSpan={10 + visibleCols.size} className="px-4 py-16 text-center text-muted-foreground">
                       No railcars match these filters.
                     </td>
                   </tr>
@@ -732,6 +794,47 @@ export default function FleetRegistry() {
                       <td className="px-4 py-3 font-mono-num text-muted-foreground">
                         {fmtDate(r.assignment?.rider?.expiration_date)}
                       </td>
+                      {/* Optional columns */}
+                      {visibleCols.has("nbv") && (
+                        <td className="px-4 py-3 font-mono-num text-muted-foreground whitespace-nowrap">
+                          {(r as any).nbv != null ? `$${Number((r as any).nbv).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}` : "—"}
+                        </td>
+                      )}
+                      {visibleCols.has("oac") && (
+                        <td className="px-4 py-3 font-mono-num text-muted-foreground whitespace-nowrap">
+                          {(r as any).oac != null ? `$${Number((r as any).oac).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}` : "—"}
+                        </td>
+                      )}
+                      {visibleCols.has("oec") && (
+                        <td className="px-4 py-3 font-mono-num text-muted-foreground whitespace-nowrap">
+                          {(r as any).oec != null ? `$${Number((r as any).oec).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}` : "—"}
+                        </td>
+                      )}
+                      {visibleCols.has("capacity_cf") && (
+                        <td className="px-4 py-3 font-mono-num text-muted-foreground">
+                          {(r as any).capacity_cf != null ? Number((r as any).capacity_cf).toLocaleString() : "—"}
+                        </td>
+                      )}
+                      {visibleCols.has("lining") && (
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {(r as any).lining_material || (r as any).lining || (r as any).coating || "—"}
+                        </td>
+                      )}
+                      {visibleCols.has("build_year") && (
+                        <td className="px-4 py-3 font-mono-num text-muted-foreground">
+                          {(r as any).build_year ?? "—"}
+                        </td>
+                      )}
+                      {visibleCols.has("description") && (
+                        <td className="px-4 py-3 text-muted-foreground max-w-[180px] truncate">
+                          {(r as any).general_description || (r as any).description || "—"}
+                        </td>
+                      )}
+                      {visibleCols.has("mech_designation") && (
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {(r as any).mechanical_designation || (r as any).mech_designation || "—"}
+                        </td>
+                      )}
                       <td className="px-4 py-3 text-muted-foreground">
                         <ChevronRight className="h-4 w-4" />
                       </td>

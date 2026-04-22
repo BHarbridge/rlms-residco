@@ -29,6 +29,16 @@ interface PreviewRow {
   rider_name: string | null;
   rider_id: number | null;
   notes: string | null;
+  // Extended optional fields
+  entity: string | null;
+  description: string | null;
+  mech_designation: string | null;
+  build_year: number | null;
+  capacity_cf: number | null;
+  lining: string | null;
+  oec: number | null;
+  nbv: number | null;
+  oac: number | null;
   is_dupe: boolean;
   warnings: string[];
   valid: boolean;
@@ -106,8 +116,42 @@ function RowStatus({ row }: { row: PreviewRow }) {
 
 // ── Template download ─────────────────────────────────────────────────────────
 function downloadTemplate() {
-  const header = "car_number,reporting_marks,car_type,status,fleet_name,rider_name,notes";
-  const example = "HWCX99001,HWCX,Hopper,Active/In-Service,COVIA,SCH 5,";
+  const header = [
+    "car_number",
+    "reporting_marks",
+    "car_type",
+    "status",
+    "entity",
+    "fleet_name",
+    "rider_name",
+    "description",
+    "mech_designation",
+    "build_year",
+    "capacity_cf",
+    "lining",
+    "oec",
+    "nbv",
+    "oac",
+    "notes",
+  ].join(",");
+  const example = [
+    "HWCX99001",
+    "HWCX",
+    "Hopper",
+    "Active/In-Service",
+    "Main",
+    "COVIA",
+    "SCH 5",
+    "286K Covered Hopper",
+    "Hopper",
+    "2010",
+    "4300",
+    "Epoxy",
+    "125000",
+    "95000",
+    "110000",
+    "",
+  ].join(",");
   const blob = new Blob([header + "\n" + example], { type: "text/csv" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
@@ -239,17 +283,26 @@ export default function BulkImportPage() {
           {/* Template download + column guide */}
           <div className="mt-4 flex items-start gap-3 p-4 rounded-lg border border-border bg-card/60">
             <Info className="h-4 w-4 text-muted-foreground mt-0.5 shrink-0" />
-            <div className="text-xs text-muted-foreground space-y-1">
+            <div className="text-xs text-muted-foreground space-y-1 w-full">
               <div className="font-medium text-foreground">Expected columns</div>
-              <div className="grid grid-cols-2 gap-x-6 gap-y-0.5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-0.5">
                 {[
                   ["car_number", "Required · e.g. HWCX010823"],
                   ["reporting_marks", "Optional · e.g. HWCX"],
                   ["car_type", "Optional · e.g. Hopper"],
                   ["status", "Optional · defaults to Active/In-Service"],
-                  ["fleet_name", "Optional · e.g. COVIA"],
+                  ["entity", "Optional · Main or Rail Partners Select"],
+                  ["fleet_name", "Optional · Lessee name e.g. COVIA"],
                   ["rider_name", `Optional · must match exactly: ${(riders ?? []).map((r: any) => r.rider_name).join(", ") || "loading\u2026"}`],
-                  ["notes", "Optional"],
+                  ["description", "Optional · e.g. 286K Covered Hopper"],
+                  ["mech_designation", "Optional · mechanical designation"],
+                  ["build_year", "Optional · 4-digit year e.g. 2010"],
+                  ["capacity_cf", "Optional · capacity in cubic feet e.g. 4300"],
+                  ["lining", "Optional · e.g. Epoxy, Rubber"],
+                  ["oec", "Optional · Original estimated build cost (numeric)"],
+                  ["nbv", "Optional · Net book value (numeric)"],
+                  ["oac", "Optional · Outstanding acquisition cost (numeric)"],
+                  ["notes", "Optional · free text notes"],
                 ].map(([col, desc]) => (
                   <div key={col}>
                     <span className="font-mono text-foreground">{col}</span>

@@ -1016,9 +1016,24 @@ export async function registerRoutes(
         const marks = String(row.reporting_marks ?? row["Reporting Marks"] ?? "").trim() || null;
         const carType = String(row.car_type ?? row["Car Type"] ?? "").trim() || null;
         const status = String(row.status ?? row["Status"] ?? "").trim() || "Active/In-Service";
-        const fleetName = String(row.fleet_name ?? row["Fleet"] ?? row["Fleet Name"] ?? "").trim() || null;
+        const fleetName = String(row.fleet_name ?? row["Fleet"] ?? row["Fleet Name"] ?? row["Lessee"] ?? "").trim() || null;
         const riderName = String(row.rider_name ?? row["Rider"] ?? row["Rider Name"] ?? "").trim() || null;
         const notes = String(row.notes ?? row["Notes"] ?? "").trim() || null;
+        // Extended optional fields
+        const entityRaw = String(row.entity ?? row["Entity"] ?? "").trim() || null;
+        const description = String(row.description ?? row["Description"] ?? "").trim() || null;
+        const mechDesig = String(row.mech_designation ?? row["Mech Designation"] ?? row["Mechanical Designation"] ?? "").trim() || null;
+        const buildYearRaw = String(row.build_year ?? row["Build Year"] ?? "").trim();
+        const buildYear = buildYearRaw ? (parseInt(buildYearRaw, 10) || null) : null;
+        const capacityRaw = String(row.capacity_cf ?? row["Capacity CF"] ?? row["Capacity"] ?? "").trim();
+        const capacityCf = capacityRaw ? (parseFloat(capacityRaw) || null) : null;
+        const lining = String(row.lining ?? row["Lining"] ?? "").trim() || null;
+        const oecRaw = String(row.oec ?? row["OEC"] ?? "").trim();
+        const oec = oecRaw ? (parseFloat(oecRaw) || null) : null;
+        const nbvRaw = String(row.nbv ?? row["NBV"] ?? "").trim();
+        const nbv = nbvRaw ? (parseFloat(nbvRaw) || null) : null;
+        const oacRaw = String(row.oac ?? row["OAC"] ?? "").trim();
+        const oac = oacRaw ? (parseFloat(oacRaw) || null) : null;
 
         const isDupe = existingNums.has(carNum);
         const riderId = riderName ? (riderMap.get(riderName.toUpperCase()) ?? null) : null;
@@ -1028,6 +1043,8 @@ export async function registerRoutes(
         if (!carNum) warnings.push("Missing car number");
         if (isDupe) warnings.push("Car number already exists — will be skipped");
         if (riderUnknown) warnings.push(`Rider "${riderName}" not found — car will be unassigned`);
+        if (buildYearRaw && !buildYear) warnings.push(`Invalid build_year: "${buildYearRaw}"`);
+        if (entityRaw && entityRaw !== "Main" && entityRaw !== "Rail Partners Select") warnings.push(`entity "${entityRaw}" should be "Main" or "Rail Partners Select"`);
 
         return {
           _row: idx + 1,
@@ -1039,6 +1056,15 @@ export async function registerRoutes(
           rider_name: riderName,
           rider_id: riderId,
           notes,
+          entity: entityRaw,
+          description,
+          mech_designation: mechDesig,
+          build_year: buildYear,
+          capacity_cf: capacityCf,
+          lining,
+          oec,
+          nbv,
+          oac,
           is_dupe: isDupe,
           warnings,
           valid: !!carNum && !isDupe,
@@ -1068,10 +1094,19 @@ export async function registerRoutes(
       // Insert railcars in batches of 100
       const carInserts = validRows.map((r) => ({
         car_number: r.car_number,
-        reporting_marks: r.reporting_marks,
-        car_type: r.car_type,
+        reporting_marks: r.reporting_marks ?? null,
+        car_type: r.car_type ?? null,
         status: r.status,
-        notes: r.notes,
+        notes: r.notes ?? null,
+        entity: r.entity ?? null,
+        description: r.description ?? null,
+        mechanical_designation: r.mech_designation ?? null,
+        build_year: r.build_year ?? null,
+        capacity_cf: r.capacity_cf ?? null,
+        lining: r.lining ?? null,
+        oec: r.oec ?? null,
+        nbv: r.nbv ?? null,
+        oac: r.oac ?? null,
       }));
 
       const { data: inserted, error: insErr } = await supabase

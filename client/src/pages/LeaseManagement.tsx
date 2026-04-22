@@ -40,7 +40,17 @@ import {
   Wand2,
   Download,
   AlertTriangle,
+  Columns3,
 } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuCheckboxItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+  DropdownMenuItem,
+} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -532,12 +542,27 @@ export default function LeaseManagement() {
   );
 }
 
+// Optional columns definition for RiderCars (module-level so it's not re-created)
+type RCOptCol = "entity" | "nbv" | "oac" | "oec" | "capacity_cf" | "lining" | "build_year";
+const RC_OPT_COLS: { key: RCOptCol; label: string }[] = [
+  { key: "entity",      label: "Entity" },
+  { key: "nbv",         label: "NBV" },
+  { key: "oac",         label: "OAC" },
+  { key: "oec",         label: "OEC" },
+  { key: "capacity_cf", label: "Capacity (cf)" },
+  { key: "lining",      label: "Lining" },
+  { key: "build_year",  label: "Build Year" },
+];
+
 function RiderCars({ riderId }: { riderId: number }) {
   const { data: cars, isLoading } = useQuery<RailcarWithAssignment[]>({
     queryKey: ["/api/railcars"],
   });
   const [page, setPage] = useState(0);
   const pageSize = 25;
+  const [visibleCols, setVisibleCols] = useState<Set<RCOptCol>>(new Set());
+  const toggleCol = (k: RCOptCol) =>
+    setVisibleCols((s) => { const n = new Set(s); if (n.has(k)) n.delete(k); else n.add(k); return n; });
 
   const filtered = (cars ?? []).filter((c) => c.assignment?.rider_id === riderId);
   const total = filtered.length;
@@ -554,28 +579,86 @@ function RiderCars({ riderId }: { riderId: number }) {
         </div>
       ) : (
         <>
-          <div className="pt-3 text-[10px] uppercase tracking-[0.15em] text-muted-foreground mb-2">
-            Assigned cars · {total}
+          <div className="pt-3 flex items-center justify-between mb-2">
+            <span className="text-[10px] uppercase tracking-[0.15em] text-muted-foreground">
+              Assigned cars · {total}
+            </span>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors">
+                  <Columns3 className="h-3 w-3" />
+                  Columns
+                  {visibleCols.size > 0 && (
+                    <span className="bg-primary text-primary-foreground rounded-full px-1 text-[9px] font-bold">{visibleCols.size}</span>
+                  )}
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-44">
+                <DropdownMenuLabel className="text-[11px] uppercase tracking-wider text-muted-foreground">Show columns</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                {RC_OPT_COLS.map(({ key, label }) => (
+                  <DropdownMenuCheckboxItem key={key} checked={visibleCols.has(key)} onCheckedChange={() => toggleCol(key)}>
+                    {label}
+                  </DropdownMenuCheckboxItem>
+                ))}
+                {visibleCols.size > 0 && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem className="text-xs text-muted-foreground" onClick={() => setVisibleCols(new Set())}>Reset</DropdownMenuItem>
+                  </>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
-          <div className="rounded-md border border-border bg-card">
+          <div className="rounded-md border border-border bg-card overflow-x-auto">
             <table className="w-full text-xs">
               <thead className="text-muted-foreground">
                 <tr>
-                  <th className="text-left px-3 py-2 font-medium">Car Number</th>
-                  <th className="text-left px-3 py-2 font-medium">Lessee</th>
-                  <th className="text-left px-3 py-2 font-medium">Status</th>
+                  <th className="text-left px-3 py-2 font-medium whitespace-nowrap">Car Number</th>
+                  <th className="text-left px-3 py-2 font-medium whitespace-nowrap">Lessee</th>
+                  <th className="text-left px-3 py-2 font-medium whitespace-nowrap">Status</th>
+                  {RC_OPT_COLS.filter(c => visibleCols.has(c.key)).map(c => (
+                    <th key={c.key} className="text-left px-3 py-2 font-medium whitespace-nowrap">{c.label}</th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
                 {slice.map((c) => (
                   <tr key={c.id} className="border-t border-border">
                     <td className="px-3 py-1.5 font-mono-num">{c.car_number}</td>
-                    <td className="px-3 py-1.5">
-                      {c.assignment?.fleet_name ?? "—"}
-                    </td>
-                    <td className="px-3 py-1.5 text-muted-foreground">
-                      {c.status ?? "—"}
-                    </td>
+                    <td className="px-3 py-1.5">{c.assignment?.fleet_name ?? "—"}</td>
+                    <td className="px-3 py-1.5 text-muted-foreground">{c.status ?? "—"}</td>
+                    {visibleCols.has("entity") && (
+                      <td className="px-3 py-1.5 text-muted-foreground">{(c as any).entity ?? "—"}</td>
+                    )}
+                    {visibleCols.has("nbv") && (
+                      <td className="px-3 py-1.5 font-mono-num text-muted-foreground whitespace-nowrap">
+                        {(c as any).nbv != null ? `$${Number((c as any).nbv).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}` : "—"}
+                      </td>
+                    )}
+                    {visibleCols.has("oac") && (
+                      <td className="px-3 py-1.5 font-mono-num text-muted-foreground whitespace-nowrap">
+                        {(c as any).oac != null ? `$${Number((c as any).oac).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}` : "—"}
+                      </td>
+                    )}
+                    {visibleCols.has("oec") && (
+                      <td className="px-3 py-1.5 font-mono-num text-muted-foreground whitespace-nowrap">
+                        {(c as any).oec != null ? `$${Number((c as any).oec).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}` : "—"}
+                      </td>
+                    )}
+                    {visibleCols.has("capacity_cf") && (
+                      <td className="px-3 py-1.5 font-mono-num text-muted-foreground">
+                        {(c as any).capacity_cf != null ? Number((c as any).capacity_cf).toLocaleString() : "—"}
+                      </td>
+                    )}
+                    {visibleCols.has("lining") && (
+                      <td className="px-3 py-1.5 text-muted-foreground">
+                        {(c as any).lining_material || (c as any).lining || (c as any).coating || "—"}
+                      </td>
+                    )}
+                    {visibleCols.has("build_year") && (
+                      <td className="px-3 py-1.5 font-mono-num text-muted-foreground">{(c as any).build_year ?? "—"}</td>
+                    )}
                   </tr>
                 ))}
               </tbody>
