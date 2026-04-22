@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Trash2, Search, Download, FileText, Share2 } from "lucide-react";
+import DvSubNav from "./DvSubNav";
 import { useToast } from "@/hooks/use-toast";
 import { useRoute } from "wouter";
 import type { DvCalculation } from "@/lib/dv/types";
@@ -46,6 +47,8 @@ export default function HistoryPage() {
   });
 
   return (
+    <>
+    <DvSubNav />
     <div className="px-4 md:px-8 py-5 md:py-8 max-w-[1600px]">
       <header className="mb-5 md:mb-6 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div className="min-w-0">
@@ -135,6 +138,7 @@ export default function HistoryPage() {
         </div>
       </div>
     </div>
+    </>
   );
 }
 

@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Plus, Trash2, Save, Calculator, AlertCircle, Check, Search, Download, Share2 } from "lucide-react";
+import DvSubNav from "./DvSubNav";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation } from "wouter";
 import type { AbCodeRow, CarDepRateRow, DvResult, EquipmentType, RailcarRow, CalculationPayload } from "@/lib/dv/types";
@@ -135,6 +136,8 @@ export default function NewCalculationPage() {
     setForm((f) => ({ ...f, abItems: f.abItems.map((r, k) => (k === i ? { ...r, ...patch } : r)) }));
 
   return (
+    <>
+    <DvSubNav />
     <div className="px-4 md:px-8 py-5 md:py-8 max-w-[1600px]">
       <header className="mb-5 md:mb-6 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div className="min-w-0">
@@ -282,6 +285,7 @@ export default function NewCalculationPage() {
         </div>
       </div>
     </div>
+    </>
   );
 }
 

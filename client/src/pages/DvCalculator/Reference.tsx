@@ -10,11 +10,14 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { Plus } from "lucide-react";
+import DvSubNav from "./DvSubNav";
 import type { AbCodeRow, CarDepRateRow, CostFactorRow, SalvageQuarterRow } from "@/lib/dv/types";
 import { fmtUsd, fmtPct, quarterLabel } from "@/lib/dv/format";
 
 export default function ReferencePage() {
   return (
+    <>
+    <DvSubNav />
     <div className="px-4 md:px-8 py-5 md:py-8 max-w-[1600px]">
       <header className="mb-5 md:mb-6">
         <h1 className="text-lg md:text-xl font-semibold tracking-tight">Reference Data</h1>
@@ -39,6 +42,7 @@ export default function ReferencePage() {
         <TabsContent value="car"><CarRates /></TabsContent>
       </Tabs>
     </div>
+    </>
   );
 }
 

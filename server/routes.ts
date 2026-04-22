@@ -1723,9 +1723,9 @@ export async function registerRoutes(
           code: it.code,
           value: it.value,
           install_date: it.installDate.toISOString().slice(0, 10),
-          rate_basis: it.rateBasis,
-          rate: it.rate,
-          max_depreciation: it.maxDepreciation,
+          rate_basis: it.rateBasis ?? abMap.get(it.code)?.rate_basis ?? "ANNUAL",
+          rate: it.rate ?? abMap.get(it.code)?.rate ?? 0,
+          max_depreciation: it.max ?? abMap.get(it.code)?.max_depreciation ?? 1,
         }));
         const { error: e2 } = await supabase.from("dv_calculation_ab_items").insert(ab);
         if (e2) throw e2;
