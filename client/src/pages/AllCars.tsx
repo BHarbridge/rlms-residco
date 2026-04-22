@@ -1,12 +1,12 @@
 /**
- * All Railcars — comprehensive read-only view of every car in the registry.
- * Shows all key fields, supports filtering/sorting, and provides a quick-glance
- * count breakdown by entity and status.
+ * All Railcars — comprehensive view of every car in the registry.
+ * Supports filtering, sorting, and a column visibility picker for optional fields.
  */
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import PageHeader from "@/components/PageHeader";
 import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Select,
@@ -22,13 +22,22 @@ import {
   SheetTitle,
   SheetDescription,
 } from "@/components/ui/sheet";
-import { Search, ArrowUpDown, ChevronRight, Layers } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuCheckboxItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+  DropdownMenuItem,
+} from "@/components/ui/dropdown-menu";
+import { Search, ArrowUpDown, ChevronRight, Layers, Columns3 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { RailcarWithAssignment } from "@shared/schema";
 
 type Row = RailcarWithAssignment;
 
-// ── Shared constants (mirrored from FleetRegistry) ────────────────────────────
+// ── Shared constants ──────────────────────────────────────────────────────────
 const ENTITY_STYLES: Record<string, { label: string; cls: string }> = {
   "Rail Partners Select": { label: "RPS",   cls: "bg-violet-500/15 text-violet-300 border-violet-500/30 font-semibold" },
   "Main":                 { label: "OWNED", cls: "bg-sky-500/15 text-sky-300 border-sky-500/30 font-semibold" },
@@ -45,12 +54,7 @@ const STATUS_BADGE: Record<string, string> = {
 };
 
 const STATUS_OPTIONS = [
-  "Active/In-Service",
-  "Storage",
-  "Bad Order",
-  "Off-Lease",
-  "Retired",
-  "Scrapped",
+  "Active/In-Service", "Storage", "Bad Order", "Off-Lease", "Retired", "Scrapped",
 ];
 
 function EntityBadge({ entity }: { entity: string | null | undefined }) {
@@ -73,24 +77,80 @@ function StatusBadge({ status }: { status: string | null | undefined }) {
   );
 }
 
+function fmtMoney(v: any) {
+  if (v == null || v === "") return "—";
+  return `$${Number(v).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+}
+
 function fmtDate(d: string | null | undefined) {
   if (!d) return "—";
   return new Date(d).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "2-digit" });
 }
 
+// ── Column definitions ────────────────────────────────────────────────────────
+// Each column: key, label, always-on vs optional, and whether it's sortable
+type ColKey =
+  | "entity" | "car_number" | "car_initial" | "reporting_marks" | "car_type"
+  | "status" | "fleet" | "rider" | "lease" | "expiration"
+  // optional columns
+  | "mech_designation" | "description" | "lease_type" | "managed"
+  | "build_year" | "capacity_cf" | "lining" | "nbv" | "oac" | "oec";
+
+interface ColDef {
+  key: ColKey;
+  label: string;
+  optional: boolean;        // if true, shown only when toggled on
+  defaultOn: boolean;       // initial visibility for optional cols
+  sortKey?: string;         // maps to SortKey if sortable
+  className?: string;       // td/th extra classes
+}
+
+const ALL_COLS: ColDef[] = [
+  // ── Always visible ──
+  { key: "entity",          label: "Entity",       optional: false, defaultOn: true,  sortKey: "entity" },
+  { key: "car_number",      label: "Car #",        optional: false, defaultOn: true,  sortKey: "car_number", className: "font-mono font-semibold text-foreground whitespace-nowrap" },
+  { key: "reporting_marks", label: "Marks",        optional: false, defaultOn: true,  className: "font-mono text-muted-foreground text-xs" },
+  { key: "car_type",        label: "Type",         optional: false, defaultOn: true,  sortKey: "car_type", className: "text-muted-foreground" },
+  { key: "status",          label: "Status",       optional: false, defaultOn: true,  sortKey: "status" },
+  { key: "fleet",           label: "Lessee",       optional: false, defaultOn: true,  sortKey: "fleet" },
+  { key: "rider",           label: "Rider",        optional: false, defaultOn: true,  sortKey: "rider",  className: "text-muted-foreground text-xs" },
+  { key: "lease",           label: "Lease #",      optional: false, defaultOn: true,  sortKey: "lease",  className: "font-mono text-muted-foreground text-xs" },
+  { key: "expiration",      label: "Expires",      optional: false, defaultOn: true,  sortKey: "expiration", className: "font-mono text-muted-foreground text-xs whitespace-nowrap" },
+  // ── Optional ──
+  { key: "car_initial",     label: "Initial",      optional: true,  defaultOn: false, className: "font-mono text-muted-foreground text-xs" },
+  { key: "mech_designation",label: "Mech. Desig.", optional: true,  defaultOn: false, className: "text-muted-foreground text-xs" },
+  { key: "description",     label: "Description",  optional: true,  defaultOn: false, className: "text-muted-foreground text-xs max-w-[200px] truncate" },
+  { key: "lease_type",      label: "Lease Type",   optional: true,  defaultOn: false, className: "text-muted-foreground text-xs whitespace-nowrap" },
+  { key: "managed",         label: "Managed",      optional: true,  defaultOn: false, className: "text-muted-foreground text-xs whitespace-nowrap" },
+  { key: "build_year",      label: "Build Year",   optional: true,  defaultOn: false, className: "font-mono text-muted-foreground text-xs" },
+  { key: "capacity_cf",     label: "Capacity (cf)",optional: true,  defaultOn: false, className: "font-mono text-muted-foreground text-xs" },
+  { key: "lining",          label: "Lining",       optional: true,  defaultOn: false, className: "text-muted-foreground text-xs" },
+  { key: "nbv",             label: "NBV",          optional: true,  defaultOn: false, className: "font-mono text-muted-foreground text-xs whitespace-nowrap" },
+  { key: "oac",             label: "OAC",          optional: true,  defaultOn: false, className: "font-mono text-muted-foreground text-xs whitespace-nowrap" },
+  { key: "oec",             label: "OEC",          optional: true,  defaultOn: false, className: "font-mono text-muted-foreground text-xs whitespace-nowrap" },
+];
+
+const OPTIONAL_COLS = ALL_COLS.filter((c) => c.optional);
+
 // ── Sort ──────────────────────────────────────────────────────────────────────
 type SortKey = "car_number" | "entity" | "status" | "car_type" | "fleet" | "rider" | "lease" | "expiration";
 
-function Th({ label, k, sort, onClick }: {
-  label: string; k: SortKey;
+function Th({ label, sortKey, sort, onClick, className }: {
+  label: string;
+  sortKey?: string;
   sort: { key: SortKey; dir: "asc" | "desc" };
   onClick: (k: SortKey) => void;
+  className?: string;
 }) {
-  const active = sort.key === k;
+  const active = !!sortKey && sort.key === sortKey;
+  const base = "px-3 py-3 font-medium text-[10px] uppercase tracking-wider whitespace-nowrap";
+  if (!sortKey) {
+    return <th className={cn(base, className)}>{label}</th>;
+  }
   return (
     <th
-      onClick={() => onClick(k)}
-      className={cn("px-3 py-3 font-medium text-[10px] uppercase tracking-wider cursor-pointer select-none whitespace-nowrap hover:text-foreground", active && "text-foreground")}
+      onClick={() => onClick(sortKey as SortKey)}
+      className={cn(base, "cursor-pointer select-none hover:text-foreground", active && "text-foreground", className)}
     >
       <span className="inline-flex items-center gap-1">
         {label}
@@ -100,7 +160,43 @@ function Th({ label, k, sort, onClick }: {
   );
 }
 
-// ── Detail slide-over (read-only quick view) ──────────────────────────────────
+// ── Cell renderer ─────────────────────────────────────────────────────────────
+function CellValue({ col, r }: { col: ColDef; r: Row }) {
+  const ra = r as any;
+  switch (col.key) {
+    case "entity":          return <EntityBadge entity={ra.entity} />;
+    case "car_number":      return <>{r.car_number}</>;
+    case "car_initial":     return <>{ra.car_initial ?? "—"}</>;
+    case "reporting_marks": return <>{r.reporting_marks ?? "—"}</>;
+    case "car_type":        return <>{r.car_type ?? "—"}</>;
+    case "mech_designation":return <>{ra.mechanical_designation ?? "—"}</>;
+    case "description":     return <>{ra.general_description ?? "—"}</>;
+    case "status":
+      return (
+        <div className="flex flex-col gap-1">
+          <StatusBadge status={r.status} />
+          {ra.sold_to && (
+            <span className="text-[9px] uppercase tracking-widest font-bold px-1.5 py-0.5 rounded border bg-amber-500/15 text-amber-400 border-amber-500/30 w-fit">SOLD</span>
+          )}
+        </div>
+      );
+    case "lease_type":  return <>{ra.lease_type ?? "—"}</>;
+    case "managed":     return <>{ra.managed ?? "—"}</>;
+    case "fleet":       return <>{r.assignment?.fleet_name ?? <span className="text-muted-foreground italic text-xs">Unassigned</span>}</>;
+    case "rider":       return <>{r.assignment?.rider?.rider_name ?? "—"}</>;
+    case "lease":       return <>{r.assignment?.rider?.master_lease?.lease_number ?? "—"}</>;
+    case "expiration":  return <>{fmtDate(r.assignment?.rider?.expiration_date)}</>;
+    case "build_year":  return <>{ra.build_year ?? "—"}</>;
+    case "capacity_cf": return <>{ra.capacity_cf != null ? Number(ra.capacity_cf).toLocaleString() : "—"}</>;
+    case "lining":      return <>{ra.lining_material || ra.lining || ra.coating || "—"}</>;
+    case "nbv":         return <>{fmtMoney(ra.nbv)}</>;
+    case "oac":         return <>{fmtMoney(ra.oac)}</>;
+    case "oec":         return <>{fmtMoney(ra.oec)}</>;
+    default:            return <>—</>;
+  }
+}
+
+// ── Detail slide-over (read-only) ─────────────────────────────────────────────
 function CarQuickView({ car, onClose }: { car: Row | null; onClose: () => void }) {
   if (!car) return null;
   const r = car as any;
@@ -130,32 +226,33 @@ function CarQuickView({ car, onClose }: { car: Row | null; onClose: () => void }
         </SheetHeader>
 
         <div className="mt-6 space-y-0">
-          {/* Identity */}
           <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1 mt-4">Identity</p>
-          <DetailRow label="Car Number"         value={<span className="font-mono">{car.car_number}</span>} />
-          <DetailRow label="Reporting Marks"    value={<span className="font-mono">{car.reporting_marks}</span>} />
-          <DetailRow label="Car Initial"        value={<span className="font-mono">{r.car_initial}</span>} />
-          <DetailRow label="Car Type"           value={car.car_type} />
-          <DetailRow label="Mech. Designation"  value={r.mechanical_designation} />
-          <DetailRow label="General Desc."      value={r.general_description} />
+          <DetailRow label="Car Number"        value={<span className="font-mono">{car.car_number}</span>} />
+          <DetailRow label="Reporting Marks"   value={<span className="font-mono">{car.reporting_marks}</span>} />
+          <DetailRow label="Car Initial"       value={<span className="font-mono">{r.car_initial}</span>} />
+          <DetailRow label="Car Type"          value={car.car_type} />
+          <DetailRow label="Mech. Designation" value={r.mechanical_designation} />
+          <DetailRow label="Description"       value={r.general_description} />
+          <DetailRow label="Build Year"        value={r.build_year} />
+          <DetailRow label="Capacity (cf)"     value={r.capacity_cf != null ? Number(r.capacity_cf).toLocaleString() : null} />
+          <DetailRow label="Lining"            value={r.lining_material || r.lining || r.coating} />
 
-          {/* Ownership */}
-          <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1 mt-4">Ownership</p>
-          <DetailRow label="Entity"    value={<EntityBadge entity={r.entity} />} />
-          <DetailRow label="Status"    value={<StatusBadge status={car.status} />} />
-          <DetailRow label="Lease Type"       value={r.lease_type} />
-          <DetailRow label="Managed By"       value={r.managed} />
-          <DetailRow label="Managed Category" value={r.managed_category} />
-          <DetailRow label="Lining Material"  value={r.lining_material} />
+          <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1 mt-4">Ownership & Financials</p>
+          <DetailRow label="Entity"   value={<EntityBadge entity={r.entity} />} />
+          <DetailRow label="Status"   value={<StatusBadge status={car.status} />} />
+          <DetailRow label="Lease Type"        value={r.lease_type} />
+          <DetailRow label="Managed By"        value={r.managed} />
+          <DetailRow label="Managed Category"  value={r.managed_category} />
+          <DetailRow label="NBV"               value={fmtMoney(r.nbv)} />
+          <DetailRow label="OAC"               value={fmtMoney(r.oac)} />
+          <DetailRow label="OEC"               value={fmtMoney(r.oec)} />
 
-          {/* Assignment */}
           <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1 mt-4">Assignment</p>
           <DetailRow label="Lessee"   value={car.assignment?.fleet_name} />
-          <DetailRow label="Rider"   value={car.assignment?.rider?.rider_name} />
-          <DetailRow label="Lease"   value={car.assignment?.rider?.master_lease?.lease_number} />
-          <DetailRow label="Expires" value={fmtDate(car.assignment?.rider?.expiration_date)} />
+          <DetailRow label="Rider"    value={car.assignment?.rider?.rider_name} />
+          <DetailRow label="Lease"    value={car.assignment?.rider?.master_lease?.lease_number} />
+          <DetailRow label="Expires"  value={fmtDate(car.assignment?.rider?.expiration_date)} />
 
-          {/* Prior marks */}
           {(r.old_car_initial || r.old_car_number) && (
             <>
               <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1 mt-4">Prior Reporting Marks</p>
@@ -164,7 +261,6 @@ function CarQuickView({ car, onClose }: { car: Row | null; onClose: () => void }
             </>
           )}
 
-          {/* Notes */}
           {car.notes && (
             <>
               <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1 mt-4">Notes</p>
@@ -181,19 +277,13 @@ function CarQuickView({ car, onClose }: { car: Row | null; onClose: () => void }
 function SummaryStrip({ rows }: { rows: Row[] }) {
   const byEntity = useMemo(() => {
     const m = new Map<string, number>();
-    rows.forEach((r) => {
-      const e = (r as any).entity ?? "Unknown";
-      m.set(e, (m.get(e) ?? 0) + 1);
-    });
+    rows.forEach((r) => { const e = (r as any).entity ?? "Unknown"; m.set(e, (m.get(e) ?? 0) + 1); });
     return Array.from(m.entries()).sort((a, b) => b[1] - a[1]);
   }, [rows]);
 
   const byStatus = useMemo(() => {
     const m = new Map<string, number>();
-    rows.forEach((r) => {
-      const s = r.status ?? "Unknown";
-      m.set(s, (m.get(s) ?? 0) + 1);
-    });
+    rows.forEach((r) => { const s = r.status ?? "Unknown"; m.set(s, (m.get(s) ?? 0) + 1); });
     return Array.from(m.entries()).sort((a, b) => b[1] - a[1]);
   }, [rows]);
 
@@ -234,12 +324,22 @@ function SummaryStrip({ rows }: { rows: Row[] }) {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function AllCars() {
-  const [search, setSearch] = useState("");
+  const [search, setSearch]           = useState("");
   const [entityFilter, setEntityFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
-  const [assignFilter, setAssignFilter] = useState("all"); // all | assigned | unassigned
-  const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({ key: "car_number", dir: "asc" });
-  const [openCar, setOpenCar] = useState<Row | null>(null);
+  const [assignFilter, setAssignFilter] = useState("all");
+  const [sort, setSort]               = useState<{ key: SortKey; dir: "asc" | "desc" }>({ key: "car_number", dir: "asc" });
+  const [openCar, setOpenCar]         = useState<Row | null>(null);
+
+  // Column visibility — optional cols start hidden by default
+  const [visibleOptional, setVisibleOptional] = useState<Set<ColKey>>(
+    new Set(OPTIONAL_COLS.filter((c) => c.defaultOn).map((c) => c.key))
+  );
+  const toggleOptional = (k: ColKey) =>
+    setVisibleOptional((s) => { const n = new Set(s); if (n.has(k)) n.delete(k); else n.add(k); return n; });
+
+  // Columns to actually render, in order
+  const activeCols = ALL_COLS.filter((c) => !c.optional || visibleOptional.has(c.key));
 
   const { data: railcars, isLoading } = useQuery<Row[]>({ queryKey: ["/api/railcars"] });
 
@@ -291,6 +391,8 @@ export default function AllCars() {
   const toggleSort = (key: SortKey) =>
     setSort((prev) => prev.key === key ? { key, dir: prev.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" });
 
+  const optionalOnCount = visibleOptional.size;
+
   return (
     <div>
       <PageHeader
@@ -301,10 +403,10 @@ export default function AllCars() {
       <div className="px-4 sm:px-8 py-4 sm:py-6 space-y-4">
         {/* Filters */}
         <div className="flex items-center gap-2 flex-wrap">
-          <div className="relative flex-1 min-w-[260px] max-w-md">
+          <div className="relative flex-1 min-w-[220px] max-w-md">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
-              placeholder="Search car #, marks, type, lessee, entity…"
+              placeholder="Search car #, marks, type, lessee…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="pl-9"
@@ -312,9 +414,8 @@ export default function AllCars() {
             />
           </div>
 
-          {/* Entity */}
           <Select value={entityFilter} onValueChange={setEntityFilter}>
-            <SelectTrigger className="w-[200px]">
+            <SelectTrigger className="w-[190px]">
               <SelectValue placeholder="All ownership" />
             </SelectTrigger>
             <SelectContent>
@@ -325,22 +426,18 @@ export default function AllCars() {
             </SelectContent>
           </Select>
 
-          {/* Status */}
           <Select value={statusFilter} onValueChange={setStatusFilter}>
-            <SelectTrigger className="w-[180px]">
+            <SelectTrigger className="w-[170px]">
               <SelectValue placeholder="All statuses" />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All statuses</SelectItem>
-              {STATUS_OPTIONS.map((s) => (
-                <SelectItem key={s} value={s}>{s}</SelectItem>
-              ))}
+              {STATUS_OPTIONS.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
             </SelectContent>
           </Select>
 
-          {/* Assignment */}
           <Select value={assignFilter} onValueChange={setAssignFilter}>
-            <SelectTrigger className="w-[180px]">
+            <SelectTrigger className="w-[170px]">
               <SelectValue placeholder="All cars" />
             </SelectTrigger>
             <SelectContent>
@@ -350,7 +447,48 @@ export default function AllCars() {
             </SelectContent>
           </Select>
 
-          <div className="text-xs text-muted-foreground ml-auto font-mono">
+          {/* Column picker */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" className="gap-1.5 text-xs">
+                <Columns3 className="h-3.5 w-3.5" />
+                Columns
+                {optionalOnCount > 0 && (
+                  <span className="bg-primary text-primary-foreground rounded-full px-1.5 py-0.5 text-[10px] font-semibold leading-none">
+                    {optionalOnCount}
+                  </span>
+                )}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-52">
+              <DropdownMenuLabel className="text-[11px] uppercase tracking-wider text-muted-foreground">
+                Optional columns
+              </DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              {OPTIONAL_COLS.map(({ key, label }) => (
+                <DropdownMenuCheckboxItem
+                  key={key}
+                  checked={visibleOptional.has(key)}
+                  onCheckedChange={() => toggleOptional(key)}
+                >
+                  {label}
+                </DropdownMenuCheckboxItem>
+              ))}
+              {optionalOnCount > 0 && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    className="text-xs text-muted-foreground"
+                    onClick={() => setVisibleOptional(new Set())}
+                  >
+                    Reset to default
+                  </DropdownMenuItem>
+                </>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          <div className="text-xs text-muted-foreground font-mono">
             {filtered.length} / {railcars?.length ?? 0} cars
           </div>
         </div>
@@ -364,20 +502,15 @@ export default function AllCars() {
             <table className="w-full text-sm">
               <thead className="bg-muted/40 text-muted-foreground sticky top-0 z-10">
                 <tr className="text-left">
-                  <Th label="Entity"    k="entity"     sort={sort} onClick={toggleSort} />
-                  <Th label="Car #"     k="car_number" sort={sort} onClick={toggleSort} />
-                  <th className="px-3 py-3 font-medium text-[10px] uppercase tracking-wider whitespace-nowrap">Initial</th>
-                  <th className="px-3 py-3 font-medium text-[10px] uppercase tracking-wider whitespace-nowrap">Marks</th>
-                  <Th label="Type"      k="car_type"   sort={sort} onClick={toggleSort} />
-                  <th className="px-3 py-3 font-medium text-[10px] uppercase tracking-wider whitespace-nowrap">Mech.</th>
-                  <th className="px-3 py-3 font-medium text-[10px] uppercase tracking-wider whitespace-nowrap">Description</th>
-                  <Th label="Status"    k="status"     sort={sort} onClick={toggleSort} />
-                  <th className="px-3 py-3 font-medium text-[10px] uppercase tracking-wider whitespace-nowrap">Lease Type</th>
-                  <th className="px-3 py-3 font-medium text-[10px] uppercase tracking-wider whitespace-nowrap">Managed</th>
-                  <Th label="Lessee"     k="fleet"      sort={sort} onClick={toggleSort} />
-                  <Th label="Rider"     k="rider"      sort={sort} onClick={toggleSort} />
-                  <Th label="Lease #"   k="lease"      sort={sort} onClick={toggleSort} />
-                  <Th label="Expires"   k="expiration" sort={sort} onClick={toggleSort} />
+                  {activeCols.map((col) => (
+                    <Th
+                      key={col.key}
+                      label={col.label}
+                      sortKey={col.sortKey}
+                      sort={sort}
+                      onClick={toggleSort}
+                    />
+                  ))}
                   <th className="w-8" />
                 </tr>
               </thead>
@@ -385,7 +518,7 @@ export default function AllCars() {
                 {isLoading ? (
                   Array.from({ length: 12 }).map((_, i) => (
                     <tr key={i} className="border-t border-border">
-                      {Array.from({ length: 15 }).map((__, j) => (
+                      {Array.from({ length: activeCols.length + 1 }).map((__, j) => (
                         <td key={j} className="px-3 py-2.5">
                           <Skeleton className="h-4 w-full" />
                         </td>
@@ -394,75 +527,28 @@ export default function AllCars() {
                   ))
                 ) : filtered.length === 0 ? (
                   <tr>
-                    <td colSpan={15} className="px-4 py-16 text-center text-muted-foreground">
+                    <td colSpan={activeCols.length + 1} className="px-4 py-16 text-center text-muted-foreground">
                       No railcars match these filters.
                     </td>
                   </tr>
                 ) : (
-                  filtered.map((r) => {
-                    const ra = r as any;
-                    return (
-                      <tr
-                        key={r.id}
-                        className="border-t border-border hover:bg-muted/20 cursor-pointer"
-                        onClick={() => setOpenCar(r)}
-                        data-testid={`all-cars-row-${r.id}`}
-                      >
-                        <td className="px-3 py-2.5">
-                          <EntityBadge entity={ra.entity} />
+                  filtered.map((r) => (
+                    <tr
+                      key={r.id}
+                      className="border-t border-border hover:bg-muted/20 cursor-pointer"
+                      onClick={() => setOpenCar(r)}
+                      data-testid={`all-cars-row-${r.id}`}
+                    >
+                      {activeCols.map((col) => (
+                        <td key={col.key} className={cn("px-3 py-2.5", col.className)}>
+                          <CellValue col={col} r={r} />
                         </td>
-                        <td className="px-3 py-2.5 font-mono font-semibold text-foreground whitespace-nowrap">
-                          {r.car_number}
-                        </td>
-                        <td className="px-3 py-2.5 font-mono text-muted-foreground text-xs">
-                          {ra.car_initial ?? "—"}
-                        </td>
-                        <td className="px-3 py-2.5 font-mono text-muted-foreground text-xs">
-                          {r.reporting_marks ?? "—"}
-                        </td>
-                        <td className="px-3 py-2.5 text-muted-foreground">
-                          {r.car_type ?? "—"}
-                        </td>
-                        <td className="px-3 py-2.5 text-muted-foreground text-xs">
-                          {ra.mechanical_designation ?? "—"}
-                        </td>
-                        <td className="px-3 py-2.5 text-muted-foreground text-xs max-w-[180px] truncate">
-                          {ra.general_description ?? "—"}
-                        </td>
-                        <td className="px-3 py-2.5">
-                          <div className="flex flex-col gap-1">
-                            <StatusBadge status={r.status} />
-                            {(r as any).sold_to && (
-                              <span className="text-[9px] uppercase tracking-widest font-bold px-1.5 py-0.5 rounded border bg-amber-500/15 text-amber-400 border-amber-500/30 w-fit">
-                                SOLD
-                              </span>
-                            )}
-                          </div>
-                        </td>
-                        <td className="px-3 py-2.5 text-muted-foreground text-xs whitespace-nowrap">
-                          {ra.lease_type ?? "—"}
-                        </td>
-                        <td className="px-3 py-2.5 text-muted-foreground text-xs whitespace-nowrap">
-                          {ra.managed ?? "—"}
-                        </td>
-                        <td className="px-3 py-2.5 text-xs">
-                          {r.assignment?.fleet_name ?? <span className="text-muted-foreground italic text-xs">Unassigned</span>}
-                        </td>
-                        <td className="px-3 py-2.5 text-muted-foreground text-xs">
-                          {r.assignment?.rider?.rider_name ?? "—"}
-                        </td>
-                        <td className="px-3 py-2.5 font-mono text-muted-foreground text-xs">
-                          {r.assignment?.rider?.master_lease?.lease_number ?? "—"}
-                        </td>
-                        <td className="px-3 py-2.5 font-mono text-muted-foreground text-xs whitespace-nowrap">
-                          {fmtDate(r.assignment?.rider?.expiration_date)}
-                        </td>
-                        <td className="px-3 py-2.5 text-muted-foreground">
-                          <ChevronRight className="h-3.5 w-3.5" />
-                        </td>
-                      </tr>
-                    );
-                  })
+                      ))}
+                      <td className="px-3 py-2.5 text-muted-foreground">
+                        <ChevronRight className="h-3.5 w-3.5" />
+                      </td>
+                    </tr>
+                  ))
                 )}
               </tbody>
             </table>
@@ -470,7 +556,6 @@ export default function AllCars() {
         </div>
       </div>
 
-      {/* Quick-view slide-over */}
       <CarQuickView car={openCar} onClose={() => setOpenCar(null)} />
     </div>
   );
