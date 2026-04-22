@@ -5,7 +5,6 @@ import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  Upload,
   FileSpreadsheet,
   AlertTriangle,
   CheckCircle2,
@@ -56,6 +55,7 @@ interface CommitResult {
   ok: boolean;
   imported: number;
   assigned: number;
+  skipped: number;
 }
 
 // ── CSV parser (client-side, no library needed for simple cases) ───────────────
@@ -105,13 +105,61 @@ async function parseXLSX(file: File): Promise<Record<string, string>[]> {
 
 // ── Status badge ──────────────────────────────────────────────────────────────
 function RowStatus({ row }: { row: PreviewRow }) {
-  if (!row.car_number)
+  if (row.errors.length > 0)
     return <span className="text-[10px] text-red-400 font-medium uppercase">Error</span>;
-  if (row.is_dupe)
-    return <span className="text-[10px] text-amber-400 font-medium uppercase">Duplicate</span>;
   if (row.warnings.length > 0)
     return <span className="text-[10px] text-yellow-400 font-medium uppercase">Warning</span>;
   return <span className="text-[10px] text-emerald-400 font-medium uppercase">Ready</span>;
+}
+
+// ── CSV escape helper ────────────────────────────────────────────────────────────
+function escCsv(v: string | number | null | undefined) {
+  const s = String(v ?? "");
+  return s.includes(",") || s.includes('"') || s.includes("\n")
+    ? `"${s.replace(/"/g, '""')}"`
+    : s;
+}
+
+// ── Error report download ───────────────────────────────────────────────────────────
+function downloadErrorReport(rows: PreviewRow[], sourceFileName: string) {
+  const problemRows = rows.filter((r) => r.errors.length > 0 || r.warnings.length > 0);
+  if (problemRows.length === 0) return;
+
+  const headers = ["Row #", "Car Number", "Reporting Marks", "Issue Type", "Issue Details"];
+  const dataRows: string[][] = [];
+
+  for (const row of problemRows) {
+    for (const err of row.errors) {
+      dataRows.push([
+        String(row._row),
+        row.car_number || "(blank)",
+        row.reporting_marks ?? "(blank)",
+        "Error",
+        err,
+      ]);
+    }
+    for (const warn of row.warnings) {
+      dataRows.push([
+        String(row._row),
+        row.car_number || "(blank)",
+        row.reporting_marks ?? "(blank)",
+        "Warning",
+        warn,
+      ]);
+    }
+  }
+
+  const csv = [
+    headers.map(escCsv).join(","),
+    ...dataRows.map((r) => r.map(escCsv).join(",")),
+  ].join("\n");
+
+  const baseName = sourceFileName.replace(/\.[^.]+$/, "");
+  const blob = new Blob([csv], { type: "text/csv" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${baseName}-error-report.csv`;
+  a.click();
 }
 
 // ── Template download ─────────────────────────────────────────────────────────
@@ -242,6 +290,9 @@ export default function BulkImportPage() {
           <CheckCircle2 className="h-10 w-10 text-emerald-400 mx-auto mb-3" />
           <div className="text-lg font-semibold text-foreground">{committed.imported} railcars imported</div>
           <div className="text-sm text-muted-foreground mt-1">{committed.assigned} cars assigned to riders</div>
+          {committed.skipped > 0 && (
+            <div className="text-sm text-amber-400 mt-1">{committed.skipped} rows were skipped due to errors or duplicates</div>
+          )}
           <Button className="mt-4" variant="secondary" onClick={() => { setCommitted(null); setFileName(null); setRawRows([]); }}>
             Import another file
           </Button>
@@ -288,7 +339,7 @@ export default function BulkImportPage() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-0.5">
                 {[
                   ["car_number", "Required · e.g. HWCX010823"],
-                  ["reporting_marks", "Optional · e.g. HWCX"],
+                  ["reporting_marks", "Required · e.g. HWCX"],
                   ["car_type", "Optional · e.g. Hopper"],
                   ["status", "Optional · defaults to Active/In-Service"],
                   ["entity", "Optional · Main or Rail Partners Select"],
@@ -329,10 +380,27 @@ export default function BulkImportPage() {
             <div className="mt-6 space-y-4">
               {/* Summary badges */}
               <div className="flex items-center gap-3 flex-wrap">
-                <StatChip icon={<FileSpreadsheet className="h-3.5 w-3.5" />} label="Total" value={preview.total} />
-                <StatChip icon={<CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />} label="Ready to import" value={preview.valid} color="emerald" />
-                {preview.dupes > 0 && <StatChip icon={<AlertTriangle className="h-3.5 w-3.5 text-amber-400" />} label="Duplicates (skip)" value={preview.dupes} color="amber" />}
-                {preview.errors > 0 && <StatChip icon={<XCircle className="h-3.5 w-3.5 text-red-400" />} label="Errors" value={preview.errors} color="red" />}
+                <StatChip icon={<FileSpreadsheet className="h-3.5 w-3.5" />} label="Total rows" value={preview.total} />
+                <StatChip icon={<CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />} label="Ready" value={preview.valid} color="emerald" />
+                {preview.valid_with_warnings > 0 && (
+                  <StatChip icon={<AlertTriangle className="h-3.5 w-3.5 text-yellow-400" />} label="With warnings" value={preview.valid_with_warnings} color="yellow" />
+                )}
+                {preview.dupes > 0 && (
+                  <StatChip icon={<AlertTriangle className="h-3.5 w-3.5 text-amber-400" />} label="Duplicates (skip)" value={preview.dupes} color="amber" />
+                )}
+                {preview.errors > 0 && (
+                  <StatChip icon={<XCircle className="h-3.5 w-3.5 text-red-400" />} label="Errors (skip)" value={preview.errors} color="red" />
+                )}
+                {/* Error report download — shown whenever any row has issues */}
+                {(preview.errors > 0 || preview.dupes > 0 || preview.valid_with_warnings > 0) && (
+                  <button
+                    onClick={() => downloadErrorReport(rawRows, fileName ?? "import")}
+                    className="ml-auto flex items-center gap-1.5 text-xs text-primary hover:underline underline-offset-2"
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                    Download error report
+                  </button>
+                )}
               </div>
 
               {/* Row table */}
@@ -357,7 +425,7 @@ export default function BulkImportPage() {
                           key={row._row}
                           className={cn(
                             "border-t border-border",
-                            !row.valid && "bg-red-500/5",
+                            row.errors.length > 0 && "bg-red-500/5",
                             row.is_dupe && "bg-amber-500/5",
                             row.warnings.length > 0 && row.valid && "bg-yellow-500/5"
                           )}
@@ -369,11 +437,14 @@ export default function BulkImportPage() {
                           <td className="px-3 py-2 text-muted-foreground">{row.status}</td>
                           <td className="px-3 py-2">{row.fleet_name ?? "—"}</td>
                           <td className="px-3 py-2">{row.rider_name ?? "—"}</td>
-                          <td className="px-3 py-2">
+                          <td className="px-3 py-2 min-w-[180px]">
                             <div className="space-y-0.5">
                               <RowStatus row={row} />
+                              {row.errors.map((e, i) => (
+                                <div key={`e${i}`} className="text-[10px] text-red-400 leading-snug">{e}</div>
+                              ))}
                               {row.warnings.map((w, i) => (
-                                <div key={i} className="text-[10px] text-amber-400">{w}</div>
+                                <div key={`w${i}`} className="text-[10px] text-yellow-400 leading-snug">{w}</div>
                               ))}
                             </div>
                           </td>
@@ -398,16 +469,19 @@ export default function BulkImportPage() {
               {/* Commit */}
               <div className="flex items-center gap-3 justify-end">
                 <span className="text-xs text-muted-foreground">
-                  {preview.valid} of {preview.total} rows will be imported
+                  {preview.valid + (preview.valid_with_warnings ?? 0)} of {preview.total} rows will be imported
+                  {(preview.errors > 0 || preview.dupes > 0) && (
+                    <span className="text-red-400"> · {preview.errors + preview.dupes} skipped</span>
+                  )}
                 </span>
                 <Button variant="secondary" onClick={() => { setPreview(null); setFileName(null); setRawRows([]); }}>
                   Cancel
                 </Button>
                 <Button
                   onClick={handleCommit}
-                  disabled={preview.valid === 0 || loading || !canEdit}
+                  disabled={(preview.valid + (preview.valid_with_warnings ?? 0)) === 0 || loading || !canEdit}
                 >
-                  {!canEdit ? "View only" : loading ? "Importing…" : `Import ${preview.valid} railcars`}
+                  {!canEdit ? "View only" : loading ? "Importing…" : `Import ${preview.valid + (preview.valid_with_warnings ?? 0)} railcars`}
                 </Button>
               </div>
             </div>
@@ -424,12 +498,13 @@ function StatChip({
   icon: React.ReactNode;
   label: string;
   value: number;
-  color?: "emerald" | "amber" | "red";
+  color?: "emerald" | "yellow" | "amber" | "red";
 }) {
   const colorCls = {
     emerald: "border-emerald-500/20 bg-emerald-500/10 text-emerald-400",
-    amber: "border-amber-500/20 bg-amber-500/10 text-amber-400",
-    red: "border-red-500/20 bg-red-500/10 text-red-400",
+    yellow:  "border-yellow-500/20 bg-yellow-500/10 text-yellow-400",
+    amber:   "border-amber-500/20 bg-amber-500/10 text-amber-400",
+    red:     "border-red-500/20 bg-red-500/10 text-red-400",
   }[color ?? ""] ?? "border-border bg-card text-muted-foreground";
 
   return (

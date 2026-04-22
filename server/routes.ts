@@ -1039,12 +1039,24 @@ export async function registerRoutes(
         const riderId = riderName ? (riderMap.get(riderName.toUpperCase()) ?? null) : null;
         const riderUnknown = !!riderName && riderId === null;
 
+        // Separate hard errors (block import) from soft warnings (import proceeds with note)
+        const errors: string[] = [];
         const warnings: string[] = [];
-        if (!carNum) warnings.push("Missing car number");
-        if (isDupe) warnings.push("Car number already exists — will be skipped");
-        if (riderUnknown) warnings.push(`Rider "${riderName}" not found — car will be unassigned`);
-        if (buildYearRaw && !buildYear) warnings.push(`Invalid build_year: "${buildYearRaw}"`);
-        if (entityRaw && entityRaw !== "Main" && entityRaw !== "Rail Partners Select") warnings.push(`entity "${entityRaw}" should be "Main" or "Rail Partners Select"`);
+
+        if (!carNum) errors.push("Missing car_number — required field");
+        if (!marks)  errors.push("Missing reporting_marks — required field");
+        if (isDupe)  errors.push("Car number already exists in the system — duplicate will be skipped");
+
+        if (riderUnknown) warnings.push(`Rider "${riderName}" not found in system — car will be imported unassigned`);
+        if (buildYearRaw && !buildYear) warnings.push(`Invalid build_year "${buildYearRaw}" — must be a 4-digit number, field will be left blank`);
+        if (entityRaw && entityRaw !== "Main" && entityRaw !== "Rail Partners Select") warnings.push(`entity "${entityRaw}" is not recognised — expected "Main" or "Rail Partners Select", field will be left blank`);
+        if (oecRaw && oec === null) warnings.push(`Invalid oec value "${oecRaw}" — must be numeric, field will be left blank`);
+        if (nbvRaw && nbv === null) warnings.push(`Invalid nbv value "${nbvRaw}" — must be numeric, field will be left blank`);
+        if (oacRaw && oac === null) warnings.push(`Invalid oac value "${oacRaw}" — must be numeric, field will be left blank`);
+        if (capacityRaw && capacityCf === null) warnings.push(`Invalid capacity_cf value "${capacityRaw}" — must be numeric, field will be left blank`);
+
+        const hasErrors = errors.length > 0;
+        const isValid = !hasErrors;
 
         return {
           _row: idx + 1,
@@ -1056,7 +1068,7 @@ export async function registerRoutes(
           rider_name: riderName,
           rider_id: riderId,
           notes,
-          entity: entityRaw,
+          entity: entityRaw && (entityRaw === "Main" || entityRaw === "Rail Partners Select") ? entityRaw : null,
           description,
           mech_designation: mechDesig,
           build_year: buildYear,
@@ -1066,16 +1078,18 @@ export async function registerRoutes(
           nbv,
           oac,
           is_dupe: isDupe,
+          errors,
           warnings,
-          valid: !!carNum && !isDupe,
+          valid: isValid,
         };
       });
 
       res.json({
         total: rows.length,
-        valid: preview.filter((r) => r.valid).length,
+        valid: preview.filter((r) => r.valid && r.warnings.length === 0).length,
+        valid_with_warnings: preview.filter((r) => r.valid && r.warnings.length > 0).length,
         dupes: preview.filter((r) => r.is_dupe).length,
-        errors: preview.filter((r) => !r.car_number).length,
+        errors: preview.filter((r) => !r.valid).length,
         preview,
       });
     } catch (err) { errHandler(res, err); }
@@ -1132,10 +1146,14 @@ export async function registerRoutes(
         if (aErr) throw aErr;
       }
 
+      const totalSubmitted = rows.length;
+      const importedCount = inserted?.length ?? 0;
+
       res.json({
         ok: true,
-        imported: inserted?.length ?? 0,
+        imported: importedCount,
         assigned: assignments.length,
+        skipped: totalSubmitted - importedCount,
       });
     } catch (err) { errHandler(res, err); }
   });
