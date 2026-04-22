@@ -242,14 +242,17 @@ const EMPTY_FORM = {
 };
 
 function InvoiceForm({
-  initial, onSave, onCancel, loading,
+  initial, currentPdfUrl, onSave, onCancel, loading,
 }: {
   initial?: Partial<typeof EMPTY_FORM>;
-  onSave: (d: Record<string, any>) => void;
+  currentPdfUrl?: string | null;
+  onSave: (d: Record<string, any>, pdfFile?: File) => void;
   onCancel: () => void;
   loading: boolean;
 }) {
   const [f, setF] = useState({ ...EMPTY_FORM, ...initial });
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const pdfInputRef = useRef<HTMLInputElement>(null);
   const set = (k: keyof typeof EMPTY_FORM, v: string) => setF(prev => ({ ...prev, [k]: v }));
 
   function submit(e: React.FormEvent) {
@@ -266,7 +269,7 @@ function InvoiceForm({
     ["vendor_name", "repair_description", "notes"].forEach(k => {
       payload[k] = f[k as keyof typeof EMPTY_FORM] === "" ? null : f[k as keyof typeof EMPTY_FORM];
     });
-    onSave(payload);
+    onSave(payload, pendingFile ?? undefined);
   }
 
   const field = (label: string, k: keyof typeof EMPTY_FORM, type = "text", placeholder = "") => (
@@ -279,6 +282,10 @@ function InvoiceForm({
       />
     </div>
   );
+
+  // Effective PDF state: pending file overrides existing URL
+  const hasPdf = pendingFile !== null || !!currentPdfUrl;
+  const pdfLabel = pendingFile ? pendingFile.name : currentPdfUrl ? "View attached PDF" : null;
 
   return (
     <form onSubmit={submit} className="space-y-4">
@@ -326,6 +333,60 @@ function InvoiceForm({
           className="text-sm min-h-[72px] resize-none"
         />
       </div>
+
+      {/* PDF Cover Sheet */}
+      <div className="space-y-1.5">
+        <label className="text-xs font-medium text-muted-foreground">Invoice Cover Sheet (PDF)</label>
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-9 text-sm gap-1.5"
+            onClick={() => pdfInputRef.current?.click()}
+          >
+            <Paperclip className="h-3.5 w-3.5" />
+            {hasPdf ? "Replace PDF" : "Attach PDF"}
+          </Button>
+          {pendingFile && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-9 text-xs text-muted-foreground gap-1"
+              onClick={() => { setPendingFile(null); if (pdfInputRef.current) pdfInputRef.current.value = ""; }}
+            >
+              <XCircle className="h-3.5 w-3.5" /> Remove
+            </Button>
+          )}
+          <input
+            ref={pdfInputRef}
+            type="file"
+            accept=".pdf,.png,.jpg,.jpeg"
+            className="hidden"
+            onChange={e => { const file = e.target.files?.[0]; if (file) setPendingFile(file); }}
+          />
+        </div>
+        {pendingFile ? (
+          <p className="text-xs text-primary flex items-center gap-1">
+            <FileText className="h-3.5 w-3.5" />
+            {pendingFile.name} — will be uploaded on save
+          </p>
+        ) : currentPdfUrl ? (
+          <a
+            href={currentPdfUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="text-xs text-primary hover:underline flex items-center gap-1"
+          >
+            <FileText className="h-3.5 w-3.5" />
+            View current PDF
+          </a>
+        ) : (
+          <p className="text-xs text-muted-foreground">No PDF attached — you can add one now or later from the invoice detail view.</p>
+        )}
+      </div>
+
       <div className="flex justify-end gap-2 pt-2">
         <Button type="button" variant="outline" size="sm" onClick={onCancel}>Cancel</Button>
         <Button type="submit" size="sm" disabled={loading}>
@@ -824,17 +885,60 @@ export default function APTracker() {
     qc.invalidateQueries({ queryKey: ["/api/invoices-all"] });
   };
 
-  const createMut = useMutation({
-    mutationFn: (d: Record<string, any>) => apiRequest("POST", "/api/invoices", d).then(r => r.json()),
-    onSuccess: () => { invalidate(); setAddOpen(false); toast({ title: "Invoice created" }); },
-    onError: () => toast({ title: "Failed to create invoice", variant: "destructive" }),
-  });
+  const [addSaving, setAddSaving] = useState(false);
+  const [editSaving, setEditSaving] = useState(false);
 
-  const updateMut = useMutation({
-    mutationFn: ({ id, ...d }: Record<string, any>) => apiRequest("PATCH", `/api/invoices/${id}`, d).then(r => r.json()),
-    onSuccess: () => { invalidate(); setEditInvoice(null); toast({ title: "Invoice updated" }); },
-    onError: () => toast({ title: "Failed to update", variant: "destructive" }),
-  });
+  async function uploadInvoicePdf(invoiceId: string, file: File) {
+    const fd = new FormData();
+    fd.append("file", file);
+    const base = ("__PORT_5000__").startsWith("__") ? "" : "__PORT_5000__";
+    const r = await fetch(`${base}/api/invoices/${invoiceId}/upload-pdf`, { method: "POST", body: fd });
+    if (!r.ok) throw new Error("PDF upload failed");
+    return r.json();
+  }
+
+  async function handleCreateInvoice(data: Record<string, any>, pdfFile?: File) {
+    setAddSaving(true);
+    try {
+      const invoice = await apiRequest("POST", "/api/invoices", data).then(r => r.json());
+      if (pdfFile && invoice?.id) {
+        try {
+          await uploadInvoicePdf(invoice.id, pdfFile);
+        } catch {
+          toast({ title: "Invoice created but PDF upload failed", variant: "destructive" });
+        }
+      }
+      invalidate();
+      setAddOpen(false);
+      toast({ title: pdfFile ? "Invoice created with PDF" : "Invoice created" });
+    } catch {
+      toast({ title: "Failed to create invoice", variant: "destructive" });
+    } finally {
+      setAddSaving(false);
+    }
+  }
+
+  async function handleUpdateInvoice(data: Record<string, any>, pdfFile?: File) {
+    if (!editInvoice) return;
+    setEditSaving(true);
+    try {
+      await apiRequest("PATCH", `/api/invoices/${editInvoice.id}`, data);
+      if (pdfFile) {
+        try {
+          await uploadInvoicePdf(editInvoice.id, pdfFile);
+        } catch {
+          toast({ title: "Invoice updated but PDF upload failed", variant: "destructive" });
+        }
+      }
+      invalidate();
+      setEditInvoice(null);
+      toast({ title: pdfFile ? "Invoice updated with PDF" : "Invoice updated" });
+    } catch {
+      toast({ title: "Failed to update invoice", variant: "destructive" });
+    } finally {
+      setEditSaving(false);
+    }
+  }
 
   const deleteMut = useMutation({
     mutationFn: (id: string) => apiRequest("DELETE", `/api/invoices/${id}`).then(r => r.json()),
@@ -1139,7 +1243,11 @@ export default function APTracker() {
             <DialogTitle>Add Invoice</DialogTitle>
             <DialogDescription>Log a new repair invoice for collection tracking.</DialogDescription>
           </DialogHeader>
-          <InvoiceForm onSave={createMut.mutate} onCancel={() => setAddOpen(false)} loading={createMut.isPending} />
+          <InvoiceForm
+            onSave={handleCreateInvoice}
+            onCancel={() => setAddOpen(false)}
+            loading={addSaving}
+          />
         </DialogContent>
       </Dialog>
 
@@ -1167,9 +1275,10 @@ export default function APTracker() {
                 last_communication_date: editInvoice.last_communication_date ?? "",
                 next_followup_date: editInvoice.next_followup_date ?? "",
               }}
-              onSave={d => updateMut.mutate({ id: editInvoice.id, ...d })}
+              currentPdfUrl={editInvoice.pdf_url}
+              onSave={handleUpdateInvoice}
               onCancel={() => setEditInvoice(null)}
-              loading={updateMut.isPending}
+              loading={editSaving}
             />
           )}
         </DialogContent>
