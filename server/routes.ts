@@ -2061,5 +2061,181 @@ export async function registerRoutes(
     } catch (err) { errHandler(res, err); }
   });
 
+  // ── PROGRAMS MODULE ──────────────────────────────────────────────────────────
+
+  // GET /api/programs — list all programs with doc + car counts
+  app.get("/api/programs", async (req, res) => {
+    try {
+      const userId = await requireUser(req, res);
+      if (!userId) return;
+      const { data, error } = await supabase
+        .from("programs")
+        .select("*, program_documents(id), program_cars(id)")
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      const programs = (data ?? []).map((p: any) => ({
+        ...p,
+        doc_count: p.program_documents?.length ?? 0,
+        car_count: p.program_cars?.length ?? 0,
+        program_documents: undefined,
+        program_cars: undefined,
+      }));
+      res.json(programs);
+    } catch (err) { errHandler(res, err); }
+  });
+
+  // POST /api/programs — create program
+  app.post("/api/programs", async (req, res) => {
+    try {
+      const userId = await requireUser(req, res);
+      if (!userId) return;
+      const { name, description, status } = req.body;
+      if (!name?.trim()) return res.status(400).json({ error: "Name is required" });
+      const { data, error } = await supabase
+        .from("programs")
+        .insert({ name: name.trim(), description: description || null, status: status || "active", created_by: userId })
+        .select()
+        .single();
+      if (error) throw error;
+      res.json(data);
+    } catch (err) { errHandler(res, err); }
+  });
+
+  // PATCH /api/programs/:id — update program
+  app.patch("/api/programs/:id", async (req, res) => {
+    try {
+      const userId = await requireUser(req, res);
+      if (!userId) return;
+      const id = Number(req.params.id);
+      const { name, description, status } = req.body;
+      const updates: any = { updated_at: new Date().toISOString() };
+      if (name !== undefined) updates.name = name.trim();
+      if (description !== undefined) updates.description = description || null;
+      if (status !== undefined) updates.status = status;
+      const { data, error } = await supabase.from("programs").update(updates).eq("id", id).select().single();
+      if (error) throw error;
+      res.json(data);
+    } catch (err) { errHandler(res, err); }
+  });
+
+  // DELETE /api/programs/:id — delete program (cascades docs + car links)
+  app.delete("/api/programs/:id", async (req, res) => {
+    try {
+      const userId = await requireUser(req, res);
+      if (!userId) return;
+      const id = Number(req.params.id);
+      // Remove all files from storage first
+      const { data: docs } = await supabase.from("program_documents").select("storage_path").eq("program_id", id);
+      if (docs && docs.length > 0) {
+        const paths = docs.map((d: any) => d.storage_path);
+        await supabaseAdmin.storage.from(STORAGE_BUCKET).remove(paths);
+      }
+      const { error } = await supabase.from("programs").delete().eq("id", id);
+      if (error) throw error;
+      res.json({ ok: true });
+    } catch (err) { errHandler(res, err); }
+  });
+
+  // GET /api/programs/:id/documents — list documents for a program
+  app.get("/api/programs/:id/documents", async (req, res) => {
+    try {
+      const userId = await requireUser(req, res);
+      if (!userId) return;
+      const { data, error } = await supabase
+        .from("program_documents")
+        .select("*")
+        .eq("program_id", Number(req.params.id))
+        .order("uploaded_at", { ascending: false });
+      if (error) throw error;
+      res.json(data ?? []);
+    } catch (err) { errHandler(res, err); }
+  });
+
+  // POST /api/programs/:id/documents — upload a document
+  app.post("/api/programs/:id/documents", upload.single("file"), async (req, res) => {
+    try {
+      const userId = await requireUser(req, res);
+      if (!userId) return;
+      if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+      const programId = Number(req.params.id);
+      const docType = req.body.doc_type || "Other";
+      const ts = Date.now();
+      const safeName = req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_");
+      const storagePath = `programs/${programId}/${ts}-${safeName}`;
+      const { error: upErr } = await supabaseAdmin.storage
+        .from(STORAGE_BUCKET)
+        .upload(storagePath, req.file.buffer, { contentType: req.file.mimetype, upsert: false });
+      if (upErr) throw upErr;
+      const { data: { publicUrl } } = supabaseAdmin.storage.from(STORAGE_BUCKET).getPublicUrl(storagePath);
+      const { data, error } = await supabase.from("program_documents").insert({
+        program_id: programId,
+        file_name: req.file.originalname,
+        file_url: publicUrl,
+        storage_path: storagePath,
+        doc_type: docType,
+        file_size_bytes: req.file.size,
+        uploaded_by: userId,
+      }).select().single();
+      if (error) { await supabaseAdmin.storage.from(STORAGE_BUCKET).remove([storagePath]); throw error; }
+      res.json(data);
+    } catch (err) { errHandler(res, err); }
+  });
+
+  // DELETE /api/programs/:id/documents/:docId — delete a document
+  app.delete("/api/programs/:id/documents/:docId", async (req, res) => {
+    try {
+      const userId = await requireUser(req, res);
+      if (!userId) return;
+      const docId = Number(req.params.docId);
+      const { data: doc } = await supabase.from("program_documents").select("storage_path").eq("id", docId).single();
+      if (doc?.storage_path) await supabaseAdmin.storage.from(STORAGE_BUCKET).remove([doc.storage_path]);
+      const { error } = await supabase.from("program_documents").delete().eq("id", docId);
+      if (error) throw error;
+      res.json({ ok: true });
+    } catch (err) { errHandler(res, err); }
+  });
+
+  // GET /api/programs/:id/cars — list linked railcars
+  app.get("/api/programs/:id/cars", async (req, res) => {
+    try {
+      const userId = await requireUser(req, res);
+      if (!userId) return;
+      const { data, error } = await supabase
+        .from("program_cars")
+        .select("id, notes, added_at, railcar:railcars(id, car_number, reporting_marks, car_type, status, entity, fleet_name)")
+        .eq("program_id", Number(req.params.id))
+        .order("added_at", { ascending: true });
+      if (error) throw error;
+      res.json(data ?? []);
+    } catch (err) { errHandler(res, err); }
+  });
+
+  // POST /api/programs/:id/cars — link railcars to program
+  app.post("/api/programs/:id/cars", async (req, res) => {
+    try {
+      const userId = await requireUser(req, res);
+      if (!userId) return;
+      const programId = Number(req.params.id);
+      const { railcar_ids, notes } = req.body;
+      if (!Array.isArray(railcar_ids) || railcar_ids.length === 0) return res.status(400).json({ error: "railcar_ids required" });
+      const rows = railcar_ids.map((rid: number) => ({ program_id: programId, railcar_id: rid, notes: notes || null }));
+      const { data, error } = await supabase.from("program_cars").upsert(rows, { onConflict: "program_id,railcar_id" }).select();
+      if (error) throw error;
+      res.json(data);
+    } catch (err) { errHandler(res, err); }
+  });
+
+  // DELETE /api/programs/:id/cars/:linkId — unlink a railcar
+  app.delete("/api/programs/:id/cars/:linkId", async (req, res) => {
+    try {
+      const userId = await requireUser(req, res);
+      if (!userId) return;
+      const { error } = await supabase.from("program_cars").delete().eq("id", Number(req.params.linkId));
+      if (error) throw error;
+      res.json({ ok: true });
+    } catch (err) { errHandler(res, err); }
+  });
+
+
   return httpServer;
 }

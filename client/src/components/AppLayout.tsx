@@ -23,6 +23,7 @@ import {
   Menu,
   X as XIcon,
   Receipt,
+  FolderOpen,
 } from "lucide-react";
 import FreshnessBanner from "@/components/FreshnessBanner";
 import { cn } from "@/lib/utils";
@@ -55,6 +56,7 @@ const mainNav = [
   { href: "/search",   label: "Search",           icon: Search },
   { href: "/contacts", label: "Contacts",          icon: BookUser },
   { href: "/ap",       label: "AP Tracker",        icon: Receipt },
+  { href: "/programs", label: "Programs",           icon: FolderOpen },
   { href: "/import",   label: "Bulk Import",       icon: Upload },
 ];
 
