@@ -47,6 +47,7 @@ type MasterLease = {
   id: number;
   lease_number: string;
   lessee: string | null;
+  riders: Rider[];
 };
 
 type Rider = {
@@ -54,7 +55,6 @@ type Rider = {
   rider_name: string;
   schedule_number: string | null;
   master_lease_id: number | null;
-  master_lease: { id: number; lease_number: string } | null;
 };
 
 // ─── Contact Form Dialog ──────────────────────────────────────────────────────
@@ -83,9 +83,12 @@ function ContactFormDialog({
 
   // Pre-select MLA from existing contact or passed-in rider
   const getInitialLeaseId = () => {
+    // From an existing contact: the rider's MLA id is on contact.rider.master_lease.id
     if (initial?.rider?.master_lease?.id) return String(initial.rider.master_lease.id);
-    if (initialRiderId) {
-      const r = riders.find(r => r.id === initialRiderId);
+    // From a rider id passed directly: find which MLA that rider belongs to
+    const lookupId = initialRiderId ?? (initial ? initial.rider_id : undefined);
+    if (lookupId) {
+      const r = riders.find(r => r.id === lookupId);
       return r?.master_lease_id ? String(r.master_lease_id) : "";
     }
     return "";
@@ -405,12 +408,16 @@ export default function Contacts() {
     queryKey: ["/api/contacts"],
   });
 
-  // Fetch MLAs and Riders for the create/edit form dropdowns
-  const { data: leasesData } = useQuery<{ master_leases: MasterLease[]; riders: Rider[] }>({
+  // Fetch MLAs (with nested riders) for the create/edit form dropdowns
+  // /api/leases returns a flat array of MLAs, each with a nested riders[] array
+  const { data: leasesData = [] } = useQuery<MasterLease[]>({
     queryKey: ["/api/leases"],
   });
-  const leases: MasterLease[] = leasesData?.master_leases ?? [];
-  const riders: Rider[] = leasesData?.riders ?? [];
+  const leases: MasterLease[] = leasesData;
+  // Flatten all riders out of the MLA array, injecting master_lease_id
+  const riders: Rider[] = leases.flatMap(l =>
+    (l.riders ?? []).map(r => ({ ...r, master_lease_id: l.id }))
+  );
 
   const deleteMut = useMutation({
     mutationFn: (id: number) => apiRequest("DELETE", `/api/contacts/${id}`),
