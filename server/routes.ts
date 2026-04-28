@@ -974,6 +974,17 @@ export async function registerRoutes(
     } catch (err) { errHandler(res, err); }
   });
 
+  // POST /api/contacts — create a contact directly (rider_id in body)
+  app.post("/api/contacts", async (req, res) => {
+    try {
+      const parsed = insertRiderContactSchema.parse(req.body);
+      const { data, error } = await supabase
+        .from("rider_contacts").insert(parsed).select().single();
+      if (error) throw error;
+      res.json(data);
+    } catch (err) { errHandler(res, err); }
+  });
+
   app.patch("/api/contacts/:id", async (req, res) => {
     try {
       const id = Number(req.params.id);
