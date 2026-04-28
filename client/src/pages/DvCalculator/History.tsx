@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { Card, CardContent } from "@/components/ui/card";
@@ -7,13 +7,31 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Trash2, Search, Download, FileText, Share2 } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Trash2, Search, Download, FileText, Share2, Eye, X } from "lucide-react";
 import DvSubNav from "./DvSubNav";
 import { useToast } from "@/hooks/use-toast";
 import { useRoute } from "wouter";
 import type { DvCalculation } from "@/lib/dv/types";
 import { fmtUsd, fmtDate, fmtPct, quarterLabel } from "@/lib/dv/format";
-import { shareCalculationPdf, canNativeShareFiles } from "@/lib/dv/pdf";
+import { shareCalculationPdf, canNativeShareFiles, buildCalculationPdfDoc, buildPdfFilename, downloadCalculationPdf } from "@/lib/dv/pdf";
+
+/** Builds a blob URL for a calculation PDF. Caller is responsible for revoking it. */
+function buildPdfBlobUrl(calc: DvCalculation): { url: string; filename: string } {
+  const meta = {
+    carInitial: calc.car_initial,
+    carNumber: calc.car_number,
+    railroad: calc.railroad,
+    ddctIncidentNo: calc.ddct_incident_no,
+    incidentDate: calc.incident_date,
+    incidentLocation: calc.incident_location,
+    calcId: calc.id,
+    tareWeightLb: calc.tare_weight_lb,
+  };
+  const { doc, filename } = buildCalculationPdfDoc(calc.result_json, meta);
+  const blob = doc.output("blob");
+  return { url: URL.createObjectURL(blob), filename };
+}
 
 export default function HistoryPage() {
   const [, params] = useRoute("/dv/history/:id");
@@ -21,6 +39,32 @@ export default function HistoryPage() {
   const [q, setQ] = useState("");
   const qc = useQueryClient();
   const { toast } = useToast();
+
+  // PDF preview dialog state
+  const [previewCalc, setPreviewCalc] = useState<DvCalculation | null>(null);
+  const [pdfBlobUrl, setPdfBlobUrl] = useState<string | null>(null);
+  const [pdfFilename, setPdfFilename] = useState("");
+  const prevBlobUrl = useRef<string | null>(null);
+
+  function openPdfPreview(calc: DvCalculation) {
+    // Revoke previous blob URL to avoid memory leaks
+    if (prevBlobUrl.current) URL.revokeObjectURL(prevBlobUrl.current);
+    const { url, filename } = buildPdfBlobUrl(calc);
+    prevBlobUrl.current = url;
+    setPdfBlobUrl(url);
+    setPdfFilename(filename);
+    setPreviewCalc(calc);
+  }
+
+  function closePdfPreview() {
+    setPreviewCalc(null);
+    setPdfBlobUrl(null);
+    setPdfFilename("");
+    if (prevBlobUrl.current) {
+      URL.revokeObjectURL(prevBlobUrl.current);
+      prevBlobUrl.current = null;
+    }
+  }
 
   const { data: items = [], isLoading } = useQuery<DvCalculation[]>({
     queryKey: ["/api/calculations"],
@@ -99,22 +143,39 @@ export default function HistoryPage() {
                       <TableRow
                         key={it.id}
                         className={`cursor-pointer hover-elevate text-xs ${active ? "bg-accent" : ""}`}
-                        onClick={() => history.replaceState(null, "", `#/history/${it.id}`)}
+                        onClick={() => {
+                          history.replaceState(null, "", `#/history/${it.id}`);
+                          openPdfPreview(it);
+                        }}
                         data-testid={`row-calc-${it.id}`}
                       >
                         <TableCell className="font-mono">{it.car_initial} {it.car_number}</TableCell>
                         <TableCell className="text-muted-foreground">{fmtDate(it.incident_date)}</TableCell>
                         <TableCell className="font-mono text-[11px] text-muted-foreground">{it.ddct_incident_no || "—"}</TableCell>
                         <TableCell className="text-right font-mono font-medium">{fmtUsd(it.total_dv, { showZero: true })}</TableCell>
-                        <TableCell>
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            onClick={(e) => { e.stopPropagation(); if (confirm("Delete this calculation?")) del.mutate(it.id); }}
-                            data-testid={`button-delete-${it.id}`}
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </Button>
+                        <TableCell className="w-20">
+                          <div className="flex items-center gap-0.5">
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className="h-7 w-7"
+                              title="View PDF"
+                              onClick={(e) => { e.stopPropagation(); openPdfPreview(it); }}
+                              data-testid={`button-pdf-${it.id}`}
+                            >
+                              <Eye className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className="h-7 w-7"
+                              title="Delete"
+                              onClick={(e) => { e.stopPropagation(); if (confirm("Delete this calculation?")) del.mutate(it.id); }}
+                              data-testid={`button-delete-${it.id}`}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
                         </TableCell>
                       </TableRow>
                     );
@@ -138,6 +199,56 @@ export default function HistoryPage() {
         </div>
       </div>
     </div>
+
+    {/* PDF Preview Dialog */}
+    <Dialog open={!!previewCalc} onOpenChange={(open) => { if (!open) closePdfPreview(); }}>
+      <DialogContent className="max-w-5xl w-[95vw] h-[90vh] flex flex-col p-0 gap-0">
+        <DialogHeader className="flex-none px-5 py-3 border-b border-border flex flex-row items-center justify-between">
+          <div className="min-w-0">
+            <DialogTitle className="text-sm font-semibold truncate">
+              {previewCalc ? `${previewCalc.car_initial ?? ""} ${previewCalc.car_number ?? ""} · DDCT ${previewCalc.ddct_incident_no || "—"}` : ""}
+            </DialogTitle>
+            {pdfFilename && (
+              <p className="text-[11px] text-muted-foreground mt-0.5 truncate">{pdfFilename}</p>
+            )}
+          </div>
+          <div className="flex items-center gap-2 flex-none ml-4">
+            {previewCalc && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 text-xs gap-1.5"
+                onClick={() => {
+                  const meta = {
+                    carInitial: previewCalc.car_initial,
+                    carNumber: previewCalc.car_number,
+                    railroad: previewCalc.railroad,
+                    ddctIncidentNo: previewCalc.ddct_incident_no,
+                    incidentDate: previewCalc.incident_date,
+                    incidentLocation: previewCalc.incident_location,
+                    calcId: previewCalc.id,
+                    tareWeightLb: previewCalc.tare_weight_lb,
+                  };
+                  downloadCalculationPdf(previewCalc.result_json, meta);
+                }}
+              >
+                <Download className="h-3.5 w-3.5" /> Download PDF
+              </Button>
+            )}
+          </div>
+        </DialogHeader>
+        <div className="flex-1 min-h-0 bg-muted/30">
+          {pdfBlobUrl && (
+            <iframe
+              src={pdfBlobUrl}
+              className="w-full h-full border-0"
+              title="DV Calculation PDF"
+            />
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+
     </>
   );
 }
