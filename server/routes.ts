@@ -11,6 +11,14 @@ import {
   moveCarsSchema,
 } from "@shared/schema";
 import {
+  normalizeRow,
+  deriveManagedCategory,
+  deriveActiveBool,
+  parseDateCell,
+  parseNumberCell,
+  parseIntCell,
+} from "@shared/residco-import";
+import {
   calculateDv,
   type DvInputs,
   type DvReferenceData,
@@ -1006,6 +1014,102 @@ export async function registerRoutes(
   });
 
   // ---------- Bulk Import ----------
+  // Builds a normalized row from a workbook row using flexible header matching
+  // (see shared/residco-import.ts). Used by both /preview and /commit so the
+  // shape rendered to the operator matches what is written to the DB.
+  function buildRailcarFromRow(row: any) {
+    const n = normalizeRow(row);
+    const get = (k: string): string => {
+      const v = (n as any)[k];
+      return v == null ? "" : String(v).trim();
+    };
+    const carNum = get("car_number").toUpperCase();
+    const marks = get("reporting_marks") || null;
+    const carType = get("car_type") || null;
+    const statusRaw = get("status");
+    const status = statusRaw || "Active/In-Service";
+    const fleetName = get("fleet_name") || get("lessee_name") || null;
+    const riderName = get("rider_name") || null;
+    const notes = get("notes") || null;
+
+    const entityRaw = get("entity") || null;
+    const description = get("general_description") || null;
+    const mechDesig = get("mechanical_designation") || null;
+    const buildYearRaw = get("build_year");
+    const buildYear = buildYearRaw ? parseIntCell(buildYearRaw) : null;
+    const capacityRaw = get("capacity_cf");
+    const capacityCf = capacityRaw ? parseIntCell(capacityRaw) : null;
+    const lining = get("lining") || null;
+    const oecRaw = get("oec");
+    const oec = oecRaw ? parseNumberCell(oecRaw) : null;
+    const nbvRaw = get("nbv");
+    const nbv = nbvRaw ? parseNumberCell(nbvRaw) : null;
+    const oacRaw = get("oac");
+    const oac = oacRaw ? parseNumberCell(oacRaw) : null;
+
+    // Master-list extended fields
+    const riderExternalId = get("rider_external_id") || null;
+    const lesseeName = get("lessee_name") || null;
+    const activeStatus = get("active_status") || null;
+    const dataSource = get("data_source") || null;
+    const assignmentLabel = get("assignment_label") || null;
+    const leaseType = get("lease_type") || null;
+    const leaseStartDate = parseDateCell((n as any).lease_start_date);
+    const leaseEndDate = parseDateCell((n as any).lease_end_date);
+    const leaseExpiry = parseDateCell((n as any).lease_expiry);
+    const monthlyRentPerCar = parseNumberCell((n as any).monthly_rent_per_car);
+    const monthlyDeprPerCar = parseNumberCell((n as any).monthly_depr_per_car);
+    const totalBvRider = parseNumberCell((n as any).total_bv_rider);
+    const carsOnRiderAr = parseIntCell((n as any).cars_on_rider_ar);
+    const commodityFamily = get("commodity_family") || null;
+    const commodity = get("commodity") || null;
+    const dotCode = get("dot_code") || null;
+    const commentEventNote = get("comment_event_note") || null;
+
+    const managedCategory = deriveManagedCategory(entityRaw);
+    const activeBool = activeStatus ? deriveActiveBool(activeStatus) : true;
+
+    return {
+      car_number: carNum,
+      reporting_marks: marks,
+      car_type: carType,
+      status,
+      fleet_name: fleetName,
+      rider_name: riderName,
+      notes,
+      entity: entityRaw,
+      managed_category: managedCategory,
+      description,
+      general_description: description,
+      mechanical_designation: mechDesig,
+      build_year: buildYear,
+      capacity_cf: capacityCf,
+      lining,
+      oec, nbv, oac,
+      rider_external_id: riderExternalId,
+      lessee_name: lesseeName,
+      active_status: activeStatus,
+      active: activeBool,
+      data_source: dataSource,
+      assignment_label: assignmentLabel,
+      lease_type: leaseType,
+      lease_start_date: leaseStartDate,
+      lease_end_date: leaseEndDate,
+      lease_expiry: leaseExpiry,
+      monthly_rent_per_car: monthlyRentPerCar,
+      monthly_depr_per_car: monthlyDeprPerCar,
+      total_bv_rider: totalBvRider,
+      cars_on_rider_ar: carsOnRiderAr,
+      commodity_family: commodityFamily,
+      commodity,
+      dot_code: dotCode,
+      dot_specification: dotCode, // mirror — keeps DV calculator path working
+      comment_event_note: commentEventNote,
+      // Raw original headers preserved for debugging / round-trip
+      _normalized: n,
+    };
+  }
+
   app.post("/api/import/preview", async (req: Request, res: Response) => {
     try {
       const { rows } = req.body as { rows: any[] };
@@ -1022,73 +1126,37 @@ export async function registerRoutes(
       const riderMap = new Map<string, number>();
       for (const r of riders ?? []) riderMap.set(r.rider_name.trim().toUpperCase(), r.id);
 
+      // Track in-batch duplicates (car_number repeated within the same upload)
+      const seenInBatch = new Set<string>();
+
       const preview = rows.map((row, idx) => {
-        const carNum = String(row.car_number ?? row["Car Number"] ?? "").trim().toUpperCase();
-        const marks = String(row.reporting_marks ?? row["Reporting Marks"] ?? "").trim() || null;
-        const carType = String(row.car_type ?? row["Car Type"] ?? "").trim() || null;
-        const status = String(row.status ?? row["Status"] ?? "").trim() || "Active/In-Service";
-        const fleetName = String(row.fleet_name ?? row["Fleet"] ?? row["Fleet Name"] ?? row["Lessee"] ?? "").trim() || null;
-        const riderName = String(row.rider_name ?? row["Rider"] ?? row["Rider Name"] ?? "").trim() || null;
-        const notes = String(row.notes ?? row["Notes"] ?? "").trim() || null;
-        // Extended optional fields
-        const entityRaw = String(row.entity ?? row["Entity"] ?? "").trim() || null;
-        const description = String(row.description ?? row["Description"] ?? "").trim() || null;
-        const mechDesig = String(row.mech_designation ?? row["Mech Designation"] ?? row["Mechanical Designation"] ?? "").trim() || null;
-        const buildYearRaw = String(row.build_year ?? row["Build Year"] ?? "").trim();
-        const buildYear = buildYearRaw ? (parseInt(buildYearRaw, 10) || null) : null;
-        const capacityRaw = String(row.capacity_cf ?? row["Capacity CF"] ?? row["Capacity"] ?? "").trim();
-        const capacityCf = capacityRaw ? (parseFloat(capacityRaw) || null) : null;
-        const lining = String(row.lining ?? row["Lining"] ?? "").trim() || null;
-        const oecRaw = String(row.oec ?? row["OEC"] ?? "").trim();
-        const oec = oecRaw ? (parseFloat(oecRaw) || null) : null;
-        const nbvRaw = String(row.nbv ?? row["NBV"] ?? "").trim();
-        const nbv = nbvRaw ? (parseFloat(nbvRaw) || null) : null;
-        const oacRaw = String(row.oac ?? row["OAC"] ?? "").trim();
-        const oac = oacRaw ? (parseFloat(oacRaw) || null) : null;
+        const built = buildRailcarFromRow(row);
 
-        const isDupe = existingNums.has(carNum);
-        const riderId = riderName ? (riderMap.get(riderName.toUpperCase()) ?? null) : null;
-        const riderUnknown = !!riderName && riderId === null;
+        const isDbDupe = !!built.car_number && existingNums.has(built.car_number);
+        const isBatchDupe = !!built.car_number && seenInBatch.has(built.car_number);
+        if (built.car_number) seenInBatch.add(built.car_number);
 
-        // Separate hard errors (block import) from soft warnings (import proceeds with note)
+        const riderId = built.rider_name ? (riderMap.get(built.rider_name.toUpperCase()) ?? null) : null;
+        const riderUnknown = !!built.rider_name && riderId === null;
+
         const errors: string[] = [];
         const warnings: string[] = [];
 
-        if (!carNum) errors.push("Missing car_number — required field");
-        if (!marks)  errors.push("Missing reporting_marks — required field");
-        if (isDupe)  errors.push("Car number already exists in the system — duplicate will be skipped");
+        if (!built.car_number) errors.push("Missing car_number — required field");
+        if (isDbDupe) errors.push("Car number already exists in the system — duplicate will be skipped");
+        if (isBatchDupe) errors.push("Car number is duplicated within this file — only the first occurrence will be imported");
 
-        if (riderUnknown) warnings.push(`Rider "${riderName}" not found in system — car will be imported unassigned`);
-        if (buildYearRaw && !buildYear) warnings.push(`Invalid build_year "${buildYearRaw}" — must be a 4-digit number, field will be left blank`);
-        if (entityRaw && entityRaw !== "Main" && entityRaw !== "Rail Partners Select") warnings.push(`entity "${entityRaw}" is not recognised — expected "Main" or "Rail Partners Select", field will be left blank`);
-        if (oecRaw && oec === null) warnings.push(`Invalid oec value "${oecRaw}" — must be numeric, field will be left blank`);
-        if (nbvRaw && nbv === null) warnings.push(`Invalid nbv value "${nbvRaw}" — must be numeric, field will be left blank`);
-        if (oacRaw && oac === null) warnings.push(`Invalid oac value "${oacRaw}" — must be numeric, field will be left blank`);
-        if (capacityRaw && capacityCf === null) warnings.push(`Invalid capacity_cf value "${capacityRaw}" — must be numeric, field will be left blank`);
+        if (riderUnknown) warnings.push(`Rider "${built.rider_name}" not found in system — car will be imported unassigned`);
+        if (built.entity && !["Main", "Rail Partners Select", "Coal"].includes(built.entity))
+          warnings.push(`entity "${built.entity}" is unrecognised — expected "Main", "Rail Partners Select" or "Coal"; managed_category will fall back to entity value`);
 
-        const hasErrors = errors.length > 0;
-        const isValid = !hasErrors;
-
+        const isValid = errors.length === 0;
         return {
           _row: idx + 1,
-          car_number: carNum,
-          reporting_marks: marks,
-          car_type: carType,
-          status,
-          fleet_name: fleetName,
-          rider_name: riderName,
+          ...built,
           rider_id: riderId,
-          notes,
-          entity: entityRaw && (entityRaw === "Main" || entityRaw === "Rail Partners Select") ? entityRaw : null,
-          description,
-          mech_designation: mechDesig,
-          build_year: buildYear,
-          capacity_cf: capacityCf,
-          lining,
-          oec,
-          nbv,
-          oac,
-          is_dupe: isDupe,
+          is_dupe: isDbDupe,
+          is_batch_dupe: isBatchDupe,
           errors,
           warnings,
           valid: isValid,
@@ -1099,7 +1167,7 @@ export async function registerRoutes(
         total: rows.length,
         valid: preview.filter((r) => r.valid && r.warnings.length === 0).length,
         valid_with_warnings: preview.filter((r) => r.valid && r.warnings.length > 0).length,
-        dupes: preview.filter((r) => r.is_dupe).length,
+        dupes: preview.filter((r) => r.is_dupe || r.is_batch_dupe).length,
         errors: preview.filter((r) => !r.valid).length,
         preview,
       });
@@ -1116,55 +1184,140 @@ export async function registerRoutes(
       if (validRows.length === 0)
         return res.status(400).json({ message: "No valid rows to import" });
 
-      // Insert railcars in batches of 100
-      const carInserts = validRows.map((r) => ({
-        car_number: r.car_number,
-        reporting_marks: r.reporting_marks ?? null,
-        car_type: r.car_type ?? null,
-        status: r.status,
-        notes: r.notes ?? null,
-        entity: r.entity ?? null,
-        description: r.description ?? null,
-        mechanical_designation: r.mech_designation ?? null,
-        build_year: r.build_year ?? null,
-        capacity_cf: r.capacity_cf ?? null,
-        lining: r.lining ?? null,
-        oec: r.oec ?? null,
-        nbv: r.nbv ?? null,
-        oac: r.oac ?? null,
-      }));
+      // Strip preview-only fields and insert in chunks. Supabase + Postgres can
+      // handle 14k rows easily but a single insert is rejected over the body
+      // size limit, so we batch.
+      const stripPreviewOnly = (r: any) => {
+        const {
+          _row, _normalized,
+          rider_name, fleet_name, rider_id,
+          is_dupe, is_batch_dupe, errors, warnings, valid,
+          ...rest
+        } = r;
+        // managed_category is derived by trigger — let the DB compute it,
+        // but we still send our value as a safety net in case the trigger
+        // hasn't been deployed yet.
+        return rest;
+      };
+      const carInserts = validRows.map(stripPreviewOnly);
 
-      const { data: inserted, error: insErr } = await supabase
-        .from("railcars").insert(carInserts).select("id, car_number");
-      if (insErr) throw insErr;
-
-      // Build assignments for rows that have a rider_id + fleet_name
+      const BATCH = 500;
+      let importedCount = 0;
       const carNumToId = new Map<string, number>();
-      for (const c of inserted ?? []) carNumToId.set(c.car_number, c.id);
+      for (let i = 0; i < carInserts.length; i += BATCH) {
+        const slice = carInserts.slice(i, i + BATCH);
+        const { data: inserted, error: insErr } = await supabase
+          .from("railcars").insert(slice).select("id, car_number");
+        if (insErr) throw insErr;
+        for (const c of inserted ?? []) carNumToId.set(c.car_number, c.id);
+        importedCount += inserted?.length ?? 0;
+      }
 
+      // Build assignments for rows that resolved to an internal rider_id.
       const assignments = validRows
-        .filter((r) => r.rider_id)
+        .filter((r) => r.rider_id && carNumToId.has(r.car_number))
         .map((r) => ({
           railcar_id: carNumToId.get(r.car_number),
           rider_id: r.rider_id,
           fleet_name: r.fleet_name ?? null,
           assigned_at: new Date().toISOString(),
-        }))
-        .filter((a) => a.railcar_id);
+        }));
 
       if (assignments.length > 0) {
-        const { error: aErr } = await supabase.from("railcar_assignments").insert(assignments);
-        if (aErr) throw aErr;
+        for (let i = 0; i < assignments.length; i += BATCH) {
+          const slice = assignments.slice(i, i + BATCH);
+          const { error: aErr } = await supabase.from("railcar_assignments").insert(slice);
+          if (aErr) throw aErr;
+        }
       }
 
       const totalSubmitted = rows.length;
-      const importedCount = inserted?.length ?? 0;
-
       res.json({
         ok: true,
         imported: importedCount,
         assigned: assignments.length,
         skipped: totalSubmitted - importedCount,
+      });
+    } catch (err) { errHandler(res, err); }
+  });
+
+  // ---------- Cleanup test/sample railcars (admin-only, dry-run by default) ----------
+  // GET /api/admin/cleanup-test-railcars                 → preview candidates only (no DB writes)
+  // POST /api/admin/cleanup-test-railcars { confirm: true } → snapshot to railcars_test_quarantine
+  //                                                          and DELETE matching rows
+  // The predicate matches obvious markers only; see migrations/cleanup_test_railcars.sql
+  // for the canonical SQL implementation. The Node path mirrors that predicate via
+  // simple ilike/regex queries so an operator can run it without psql access.
+  // Mirrors migrations/cleanup_test_railcars.sql predicate. Kept conservative
+  // so legitimate cars aren't accidentally matched.
+  async function findTestRailcarCandidates(): Promise<any[]> {
+    const { data, error } = await supabase
+      .from("railcars")
+      .select("id, car_number, reporting_marks, car_type, entity, managed_category, status, notes, general_description")
+      .order("car_number", { ascending: true });
+    if (error) throw error;
+    const all = data ?? [];
+    const startsWithMarker = /^(TEST|SAMPLE|DEMO|FAKE|DUMMY|PLACEHOLDER|FOO|BAR|EXAMPLE|XXX+|ZZZ+)/i;
+    const tokenMarker = /\b(TEST|SAMPLE|DEMO|FAKE|DUMMY|PLACEHOLDER)\b/i;
+    const marksMarkers = new Set(["TEST", "SAMP", "DEMO", "XXXX", "ZZZZ", "DUMM", "FAKE"]);
+    const textHas = (s: string | null | undefined, needles: string[]) => {
+      if (!s) return false;
+      const lower = s.toLowerCase();
+      return needles.some((n) => lower.includes(n));
+    };
+    const NEEDLES = ["[test data]", "test record", "sample data", "placeholder", "do not use", "demo data"];
+    return all.filter((r: any) => {
+      const cn = String(r.car_number ?? "");
+      if (startsWithMarker.test(cn) || tokenMarker.test(cn)) return true;
+      if (r.reporting_marks && marksMarkers.has(String(r.reporting_marks).toUpperCase())) return true;
+      if (textHas(r.notes, NEEDLES)) return true;
+      if (textHas(r.general_description, NEEDLES)) return true;
+      return false;
+    });
+  }
+
+  app.get("/api/admin/cleanup-test-railcars", async (req, res) => {
+    try {
+      const adminId = await requireAdmin(req, res);
+      if (!adminId) return;
+      const candidates = await findTestRailcarCandidates();
+      res.json({ count: candidates.length, candidates });
+    } catch (err) { errHandler(res, err); }
+  });
+
+  app.post("/api/admin/cleanup-test-railcars", async (req, res) => {
+    try {
+      const adminId = await requireAdmin(req, res);
+      if (!adminId) return;
+      const confirm = (req.body as any)?.confirm === true;
+      const candidates = await findTestRailcarCandidates();
+      if (!confirm) {
+        return res.json({
+          ok: true,
+          mode: "dry-run",
+          note: "Pass { confirm: true } to actually delete the listed rows. Snapshot will be taken first.",
+          count: candidates.length,
+          candidates,
+        });
+      }
+      if (candidates.length === 0) {
+        return res.json({ ok: true, mode: "delete", deleted: 0, note: "No candidates matched." });
+      }
+      const ids = candidates.map((c: any) => c.id);
+      // Best-effort snapshot — write to a per-run notes string so we have an audit
+      // trail even if the SQL quarantine table doesn't exist in this environment.
+      const snapshot = JSON.stringify(candidates).slice(0, 500_000);
+      // Cascade deletes: assignments + history first, then car
+      await supabase.from("railcar_assignments").delete().in("railcar_id", ids);
+      await supabase.from("assignment_history").delete().in("railcar_id", ids);
+      await supabase.from("car_number_history").delete().in("railcar_id", ids);
+      const { error } = await supabase.from("railcars").delete().in("id", ids);
+      if (error) throw error;
+      res.json({
+        ok: true,
+        mode: "delete",
+        deleted: ids.length,
+        snapshot_bytes: snapshot.length,
       });
     } catch (err) { errHandler(res, err); }
   });

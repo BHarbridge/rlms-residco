@@ -12,12 +12,16 @@ import {
   ChevronDown,
   ChevronRight,
   Info,
+  Download,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient } from "@/lib/queryClient";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
+// Loose shape — server returns the full normalized row alongside derived fields.
+// We only render a small subset; everything else flows back to /api/import/commit
+// untouched, so this is intentionally permissive.
 interface PreviewRow {
   _row: number;
   car_number: string;
@@ -28,17 +32,38 @@ interface PreviewRow {
   rider_name: string | null;
   rider_id: number | null;
   notes: string | null;
-  // Extended optional fields
   entity: string | null;
+  managed_category: string | null;
   description: string | null;
-  mech_designation: string | null;
+  mechanical_designation: string | null;
   build_year: number | null;
   capacity_cf: number | null;
   lining: string | null;
   oec: number | null;
   nbv: number | null;
   oac: number | null;
+  // RESIDCO extended
+  rider_external_id: string | null;
+  lessee_name: string | null;
+  active_status: string | null;
+  active: boolean;
+  data_source: string | null;
+  assignment_label: string | null;
+  lease_type: string | null;
+  lease_start_date: string | null;
+  lease_end_date: string | null;
+  lease_expiry: string | null;
+  monthly_rent_per_car: number | null;
+  monthly_depr_per_car: number | null;
+  total_bv_rider: number | null;
+  cars_on_rider_ar: number | null;
+  commodity_family: string | null;
+  commodity: string | null;
+  dot_code: string | null;
+  comment_event_note: string | null;
   is_dupe: boolean;
+  is_batch_dupe?: boolean;
+  errors: string[];
   warnings: string[];
   valid: boolean;
 }
@@ -46,6 +71,7 @@ interface PreviewRow {
 interface PreviewResult {
   total: number;
   valid: number;
+  valid_with_warnings: number;
   dupes: number;
   errors: number;
   preview: PreviewRow[];
@@ -163,47 +189,50 @@ function downloadErrorReport(rows: PreviewRow[], sourceFileName: string) {
 }
 
 // ── Template download ─────────────────────────────────────────────────────────
+// Headers match the RESIDCO Master Car List workbook 1:1 so an operator can
+// upload the source file directly. Internal aliases (snake_case) are also
+// accepted by the server-side header normaliser.
 function downloadTemplate() {
   const header = [
-    "car_number",
-    "reporting_marks",
-    "car_type",
-    "status",
-    "entity",
-    "fleet_name",
-    "rider_name",
-    "description",
-    "mech_designation",
-    "build_year",
-    "capacity_cf",
-    "lining",
-    "oec",
-    "nbv",
-    "oac",
-    "notes",
-  ].join(",");
+    "Car Number",
+    "Rider ID",
+    "Lessee",
+    "Entity",
+    "Active",
+    "Data Source",
+    "Car Type",
+    "Description",
+    "Assignment",
+    "Lease Type",
+    "Start Date",
+    "End Date",
+    "Lease Expiry",
+    "NBV Per Car ($)",
+    "OEC Per Car ($)",
+    "Monthly Rent P/C ($)",
+    "Monthly Depr P/C ($)",
+    "Total BV — Rider ($)",
+    "Cars on Rider (AR)",
+    "Commodity Family",
+    "Commodity",
+    "Build Year",
+    "Lining",
+    "Mech Desig.",
+    "DOT Code",
+    "Comment / Event Note",
+  ].map((h) => `"${h}"`).join(",");
   const example = [
-    "HWCX99001",
-    "HWCX",
-    "Hopper",
-    "Active/In-Service",
-    "Main",
-    "COVIA",
-    "SCH 5",
-    "286K Covered Hopper",
-    "Hopper",
-    "2010",
-    "4300",
-    "Epoxy",
-    "125000",
-    "95000",
-    "110000",
-    "",
-  ].join(",");
+    "HWCX99001", "EA1503", "COVIA", "Main", "Active", "VCF_ONLY",
+    "C214", "5800 cf Covered Hoppers", "EA1503 - COVIA Active", "Net Lease",
+    "2015-05-15", "2026-03-16", "2026-03-16",
+    "85000", "125000", "650", "275",
+    "", "", "Industrial Sand", "Frac Sand", "2010", "Epoxy", "LO", "",
+    "Cleaned & returned to LBWR storage",
+  ].map((v) => `"${v}"`).join(",");
   const blob = new Blob([header + "\n" + example], { type: "text/csv" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = "rlms-import-template.csv";
+  a.download = "residco-master-car-list-template.csv";
   a.click();
 }
 
@@ -335,31 +364,47 @@ export default function BulkImportPage() {
           <div className="mt-4 flex items-start gap-3 p-4 rounded-lg border border-border bg-card/60">
             <Info className="h-4 w-4 text-muted-foreground mt-0.5 shrink-0" />
             <div className="text-xs text-muted-foreground space-y-1 w-full">
-              <div className="font-medium text-foreground">Expected columns</div>
+              <div className="font-medium text-foreground">Expected columns (RESIDCO Master Car List workbook)</div>
+              <div className="text-[11px] text-muted-foreground mb-1">
+                Header names are case- and punctuation-insensitive ("Mech Desig.", "Mechanical Designation", and "mech_designation" all map to the same field).
+              </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-0.5">
                 {[
-                  ["car_number", "Required · e.g. HWCX010823"],
-                  ["reporting_marks", "Required · e.g. HWCX"],
-                  ["car_type", "Optional · e.g. Hopper"],
-                  ["status", "Optional · defaults to Active/In-Service"],
-                  ["entity", "Optional · Main or Rail Partners Select"],
-                  ["fleet_name", "Optional · Lessee name e.g. COVIA"],
-                  ["rider_name", `Optional · must match exactly: ${(riders ?? []).map((r: any) => r.rider_name).join(", ") || "loading\u2026"}`],
-                  ["description", "Optional · e.g. 286K Covered Hopper"],
-                  ["mech_designation", "Optional · mechanical designation"],
-                  ["build_year", "Optional · 4-digit year e.g. 2010"],
-                  ["capacity_cf", "Optional · capacity in cubic feet e.g. 4300"],
-                  ["lining", "Optional · e.g. Epoxy, Rubber"],
-                  ["oec", "Optional · Original estimated build cost (numeric)"],
-                  ["nbv", "Optional · Net book value (numeric)"],
-                  ["oac", "Optional · Outstanding acquisition cost (numeric)"],
-                  ["notes", "Optional · free text notes"],
+                  ["Car Number", "Required · unique, e.g. TFOX88031"],
+                  ["Rider ID", "Optional · external rider/lease ref e.g. EA1503"],
+                  ["Lessee", "Optional · current lessee/operator"],
+                  ["Entity", "Optional · Main → RESIDCO Owned, Rail Partners Select → RPS, Coal → Coal"],
+                  ["Active", "Optional · Active / Inactive (drives `active` boolean)"],
+                  ["Data Source", "Optional · e.g. VCF_ONLY"],
+                  ["Car Type", "Optional · e.g. C214"],
+                  ["Description", "Optional · e.g. 5800 cf Covered Hoppers"],
+                  ["Assignment", "Optional · free-text assignment label"],
+                  ["Lease Type", "Optional · e.g. Net Lease, IDLE"],
+                  ["Start Date", "Optional · YYYY-MM-DD or M/D/YYYY"],
+                  ["End Date", "Optional · YYYY-MM-DD or M/D/YYYY"],
+                  ["Lease Expiry", "Optional · YYYY-MM-DD"],
+                  ["NBV Per Car ($)", "Optional · numeric, $ and commas allowed"],
+                  ["OEC Per Car ($)", "Optional · numeric"],
+                  ["Monthly Rent P/C ($)", "Optional · numeric"],
+                  ["Monthly Depr P/C ($)", "Optional · numeric"],
+                  ["Total BV — Rider ($)", "Optional · numeric (rider-level, retained per-row)"],
+                  ["Cars on Rider (AR)", "Optional · integer"],
+                  ["Commodity Family", "Optional"],
+                  ["Commodity", "Optional"],
+                  ["Build Year", "Optional · 4-digit year"],
+                  ["Lining", "Optional · e.g. Epoxy, Rubber"],
+                  ["Mech Desig.", "Optional · AAR mechanical designation (e.g. LO)"],
+                  ["DOT Code", "Optional · DOT specification"],
+                  ["Comment / Event Note", "Optional · free text"],
                 ].map(([col, desc]) => (
                   <div key={col}>
                     <span className="font-mono text-foreground">{col}</span>
                     <span className="text-muted-foreground"> — {desc}</span>
                   </div>
                 ))}
+              </div>
+              <div className="mt-2 text-[11px] text-muted-foreground">
+                Riders available for assignment-name linking: {(riders ?? []).map((r: any) => r.rider_name).join(", ") || "loading\u2026"}
               </div>
               <button onClick={downloadTemplate} className="mt-2 text-primary underline-offset-2 hover:underline">
                 Download template CSV
@@ -500,12 +545,13 @@ function StatChip({
   value: number;
   color?: "emerald" | "yellow" | "amber" | "red";
 }) {
-  const colorCls = {
+  const COLOR_CLS: Record<string, string> = {
     emerald: "border-emerald-500/20 bg-emerald-500/10 text-emerald-400",
     yellow:  "border-yellow-500/20 bg-yellow-500/10 text-yellow-400",
     amber:   "border-amber-500/20 bg-amber-500/10 text-amber-400",
     red:     "border-red-500/20 bg-red-500/10 text-red-400",
-  }[color ?? ""] ?? "border-border bg-card text-muted-foreground";
+  };
+  const colorCls = (color && COLOR_CLS[color]) || "border-border bg-card text-muted-foreground";
 
   return (
     <div className={cn("flex items-center gap-2 rounded-md border px-3 py-1.5 text-xs font-medium", colorCls)}>
