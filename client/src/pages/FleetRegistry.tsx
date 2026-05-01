@@ -153,40 +153,68 @@ function StatusBadge({ status }: { status: string | null | undefined }) {
 }
 
 function downloadRailcarsCsv(rows: RailcarWithAssignment[]) {
+  // Headers mirror the RESIDCO Master Car List workbook so an exported file can
+  // be re-imported through Bulk Import without manual remapping. Internal
+  // assignment/lease join fields are appended after the workbook columns.
   const headers = [
-    "Entity", "Car Number", "Reporting Marks", "Car Type", "Mechanical Designation",
-    "General Description", "Status", "Lease Type", "Managed Category",
-    "Transit Status", "Transit Label",
-    "Lessee", "Rider Name", "Schedule #", "MLA Lease #", "Lessor",
-    "Expiration Date", "Monthly Rent",
-    "NBV", "OAC", "OEC",
+    "Car Number", "Rider ID", "Lessee", "Entity", "Active", "Data Source",
+    "Car Type", "Description", "Assignment", "Lease Type",
+    "Start Date", "End Date", "Lease Expiry",
+    "NBV Per Car ($)", "OEC Per Car ($)",
+    "Monthly Rent P/C ($)", "Monthly Depr P/C ($)",
+    "Total BV — Rider ($)", "Cars on Rider (AR)",
+    "Commodity Family", "Commodity",
+    "Build Year", "Lining", "Mech Desig.", "DOT Code",
+    "Comment / Event Note",
+    // Internal columns (post-workbook)
+    "Managed Category", "Reporting Marks", "Status", "Transit Status", "Transit Label",
+    "Rider Name", "Schedule #", "MLA Lease #", "Lessor", "Expiration Date",
+    "OAC",
   ];
   const escape = (v: unknown) => {
     const s = v == null ? "" : String(v);
     return s.includes(",") || s.includes('"') || s.includes("\n") ? `"${s.replace(/"/g, '""')}"` : s;
   };
-  const rows_data = rows.map((r) => [
-    r.entity ?? "",
+  const get = (r: any, k: string) => (r[k] == null ? "" : String(r[k]));
+  const rows_data = rows.map((r: any) => [
     r.car_number,
-    r.reporting_marks ?? "",
+    get(r, "rider_external_id"),
+    r.lessee_name ?? r.assignment?.fleet_name ?? "",
+    r.entity ?? "",
+    r.active_status ?? (r.active === false ? "Inactive" : r.active === true ? "Active" : ""),
+    get(r, "data_source"),
     r.car_type ?? "",
-    r.mechanical_designation ?? "",
-    r.general_description ?? "",
-    r.status ?? "",
+    r.description ?? r.general_description ?? "",
+    get(r, "assignment_label"),
     r.lease_type ?? "",
+    get(r, "lease_start_date"),
+    get(r, "lease_end_date"),
+    get(r, "lease_expiry"),
+    r.nbv != null ? String(r.nbv) : "",
+    r.oec != null ? String(r.oec) : "",
+    r.monthly_rent_per_car != null ? String(r.monthly_rent_per_car) : "",
+    r.monthly_depr_per_car != null ? String(r.monthly_depr_per_car) : "",
+    r.total_bv_rider != null ? String(r.total_bv_rider) : "",
+    r.cars_on_rider_ar != null ? String(r.cars_on_rider_ar) : "",
+    get(r, "commodity_family"),
+    get(r, "commodity"),
+    r.build_year ?? r.built_year ?? "",
+    r.lining ?? r.lining_material ?? "",
+    r.mechanical_designation ?? "",
+    r.dot_code ?? r.dot_specification ?? "",
+    get(r, "comment_event_note"),
+    // Internal
     r.managed_category ?? "",
+    r.reporting_marks ?? "",
+    r.status ?? "",
     r.transit_status ?? "",
     r.transit_label ?? "",
-    r.assignment?.fleet_name ?? "",
     r.assignment?.rider?.rider_name ?? "",
     r.assignment?.rider?.schedule_number ?? "",
     r.assignment?.rider?.master_lease?.lease_number ?? "",
     r.assignment?.rider?.master_lease?.lessor ?? "",
     r.assignment?.rider?.expiration_date ?? "",
-    r.assignment?.rider?.monthly_rent != null ? String(r.assignment.rider.monthly_rent) : "",
-    (r as any).nbv != null ? String((r as any).nbv) : "",
-    (r as any).oac != null ? String((r as any).oac) : "",
-    (r as any).oec != null ? String((r as any).oec) : "",
+    r.oac != null ? String(r.oac) : "",
   ].map(escape).join(","));
   const csv = [headers.map(escape).join(","), ...rows_data].join("\n");
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
@@ -231,16 +259,35 @@ export default function FleetRegistry() {
   const { toast } = useToast();
 
   // ── Optional column visibility ─────────────────────────────────────────────
-  type OptCol = "nbv" | "oac" | "oec" | "capacity_cf" | "lining" | "build_year" | "description" | "mech_designation";
+  type OptCol =
+    | "nbv" | "oac" | "oec" | "capacity_cf" | "lining" | "build_year"
+    | "description" | "mech_designation"
+    | "monthly_rent_per_car" | "monthly_depr_per_car"
+    | "commodity" | "commodity_family"
+    | "dot_code" | "lease_type" | "lease_expiry" | "lease_start_date" | "lease_end_date"
+    | "data_source" | "active" | "comment_event_note" | "rider_external_id";
   const OPT_COLS: { key: OptCol; label: string }[] = [
-    { key: "nbv",           label: "NBV" },
-    { key: "oac",           label: "OAC" },
-    { key: "oec",           label: "OEC" },
-    { key: "capacity_cf",   label: "Capacity (cf)" },
-    { key: "lining",        label: "Lining" },
-    { key: "build_year",    label: "Build Year" },
-    { key: "description",   label: "Description" },
-    { key: "mech_designation", label: "Mech Desig." },
+    { key: "nbv",                 label: "NBV" },
+    { key: "oac",                 label: "OAC" },
+    { key: "oec",                 label: "OEC" },
+    { key: "monthly_rent_per_car", label: "Monthly Rent P/C" },
+    { key: "monthly_depr_per_car", label: "Monthly Depr P/C" },
+    { key: "capacity_cf",         label: "Capacity (cf)" },
+    { key: "lining",              label: "Lining" },
+    { key: "build_year",          label: "Build Year" },
+    { key: "description",         label: "Description" },
+    { key: "mech_designation",    label: "Mech Desig." },
+    { key: "commodity",           label: "Commodity" },
+    { key: "commodity_family",    label: "Commodity Family" },
+    { key: "dot_code",            label: "DOT Code" },
+    { key: "lease_type",          label: "Lease Type" },
+    { key: "lease_start_date",    label: "Lease Start" },
+    { key: "lease_end_date",      label: "Lease End" },
+    { key: "lease_expiry",        label: "Lease Expiry" },
+    { key: "data_source",         label: "Data Source" },
+    { key: "active",              label: "Active" },
+    { key: "rider_external_id",   label: "Rider ID" },
+    { key: "comment_event_note",  label: "Comment / Event Note" },
   ];
   const FR_DEFAULT_COLS = new Set<string>([]);
   const { visibleCols: visibleColsRaw, toggleCol, resetCols: resetVisibleCols, prefsLoaded: colPrefsLoaded } =
@@ -836,6 +883,53 @@ export default function FleetRegistry() {
                           {(r as any).mechanical_designation || (r as any).mech_designation || "—"}
                         </td>
                       )}
+                      {visibleCols.has("monthly_rent_per_car") && (
+                        <td className="px-4 py-3 font-mono-num text-muted-foreground whitespace-nowrap">
+                          {(r as any).monthly_rent_per_car != null ? `$${Number((r as any).monthly_rent_per_car).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}` : "—"}
+                        </td>
+                      )}
+                      {visibleCols.has("monthly_depr_per_car") && (
+                        <td className="px-4 py-3 font-mono-num text-muted-foreground whitespace-nowrap">
+                          {(r as any).monthly_depr_per_car != null ? `$${Number((r as any).monthly_depr_per_car).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}` : "—"}
+                        </td>
+                      )}
+                      {visibleCols.has("commodity") && (
+                        <td className="px-4 py-3 text-muted-foreground">{(r as any).commodity ?? "—"}</td>
+                      )}
+                      {visibleCols.has("commodity_family") && (
+                        <td className="px-4 py-3 text-muted-foreground">{(r as any).commodity_family ?? "—"}</td>
+                      )}
+                      {visibleCols.has("dot_code") && (
+                        <td className="px-4 py-3 font-mono-num text-muted-foreground">{(r as any).dot_code || (r as any).dot_specification || "—"}</td>
+                      )}
+                      {visibleCols.has("lease_type") && (
+                        <td className="px-4 py-3 text-muted-foreground">{(r as any).lease_type ?? "—"}</td>
+                      )}
+                      {visibleCols.has("lease_start_date") && (
+                        <td className="px-4 py-3 font-mono-num text-muted-foreground">{fmtDate((r as any).lease_start_date)}</td>
+                      )}
+                      {visibleCols.has("lease_end_date") && (
+                        <td className="px-4 py-3 font-mono-num text-muted-foreground">{fmtDate((r as any).lease_end_date)}</td>
+                      )}
+                      {visibleCols.has("lease_expiry") && (
+                        <td className="px-4 py-3 font-mono-num text-muted-foreground">{fmtDate((r as any).lease_expiry)}</td>
+                      )}
+                      {visibleCols.has("data_source") && (
+                        <td className="px-4 py-3 text-muted-foreground">{(r as any).data_source ?? "—"}</td>
+                      )}
+                      {visibleCols.has("active") && (
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {(r as any).active_status ?? ((r as any).active === false ? "Inactive" : (r as any).active === true ? "Active" : "—")}
+                        </td>
+                      )}
+                      {visibleCols.has("rider_external_id") && (
+                        <td className="px-4 py-3 font-mono-num text-muted-foreground">{(r as any).rider_external_id ?? "—"}</td>
+                      )}
+                      {visibleCols.has("comment_event_note") && (
+                        <td className="px-4 py-3 text-muted-foreground max-w-[220px] truncate" title={(r as any).comment_event_note ?? ""}>
+                          {(r as any).comment_event_note ?? "—"}
+                        </td>
+                      )}
                       <td className="px-4 py-3 text-muted-foreground">
                         <ChevronRight className="h-4 w-4" />
                       </td>
@@ -1184,6 +1278,21 @@ function CarDetail({
         <DetailRow label="NBV" value={(r as any).nbv != null ? `$${Number((r as any).nbv).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"} />
         <DetailRow label="OAC" value={(r as any).oac != null ? `$${Number((r as any).oac).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"} />
         <DetailRow label="OEC" value={(r as any).oec != null ? `$${Number((r as any).oec).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"} />
+        <DetailRow label="Monthly Rent P/C" value={(r as any).monthly_rent_per_car != null ? `$${Number((r as any).monthly_rent_per_car).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"} />
+        <DetailRow label="Monthly Depr P/C" value={(r as any).monthly_depr_per_car != null ? `$${Number((r as any).monthly_depr_per_car).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"} />
+        <DetailRow label="Total BV (Rider)" value={(r as any).total_bv_rider != null ? `$${Number((r as any).total_bv_rider).toLocaleString()}` : "—"} />
+        <DetailRow label="Cars on Rider (AR)" value={(r as any).cars_on_rider_ar ?? "—"} />
+        <DetailRow label="Commodity Family" value={(r as any).commodity_family ?? "—"} />
+        <DetailRow label="Commodity" value={(r as any).commodity ?? "—"} />
+        <DetailRow label="Build Year" value={(r as any).build_year ?? r.built_year ?? "—"} />
+        <DetailRow label="DOT Code" value={(r as any).dot_code ?? r.dot_specification ?? "—"} />
+        <DetailRow label="Data Source" value={(r as any).data_source ?? "—"} />
+        <DetailRow label="Active" value={(r as any).active_status ?? ((r as any).active === false ? "Inactive" : (r as any).active === true ? "Active" : "—")} />
+        <DetailRow label="Rider ID (external)" value={(r as any).rider_external_id ?? "—"} />
+        <DetailRow label="Lease Start" value={fmtDate((r as any).lease_start_date)} />
+        <DetailRow label="Lease End" value={fmtDate((r as any).lease_end_date)} />
+        <DetailRow label="Lease Expiry" value={fmtDate((r as any).lease_expiry)} />
+        <DetailRow label="Comment / Event Note" value={(r as any).comment_event_note ?? "—"} />
       </dl>
 
       {/* Prior reporting marks */}

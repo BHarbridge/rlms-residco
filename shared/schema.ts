@@ -53,15 +53,38 @@ export type Railcar = {
   general_description: string | null;
   lease_type: string | null;
   managed: string | null;
-  managed_category: string | null;
+  managed_category: string | null;     // derived from entity by trigger
   lining_material: string | null;
   active: boolean;
   status: string | null;
   coating: string | null;
   transit_status: string | null;
   transit_label: string | null;
-  sold_to: string | null;           // buyer if this car was individually sold/transferred
+  sold_to: string | null;
   notes: string | null;
+  // ── RESIDCO Master Car List fields (per-railcar) ──
+  rider_external_id: string | null;
+  lessee_name: string | null;
+  active_status: string | null;
+  data_source: string | null;
+  assignment_label: string | null;
+  lease_start_date: string | null;
+  lease_end_date: string | null;
+  lease_expiry: string | null;
+  monthly_rent_per_car: number | null;
+  monthly_depr_per_car: number | null;
+  total_bv_rider: number | null;
+  cars_on_rider_ar: number | null;
+  commodity_family: string | null;
+  commodity: string | null;
+  build_year: number | null;
+  lining: string | null;
+  dot_code: string | null;
+  comment_event_note: string | null;
+  description: string | null;          // mirror of general_description for UI compat
+  nbv: number | null;
+  oec: number | null;
+  oac: number | null;
   created_at?: string;
   updated_at?: string;
 };
@@ -167,6 +190,29 @@ export const insertRailcarSchema = z.object({
   transit_label: z.string().nullable().optional(),
   sold_to: z.string().nullable().optional(),
   notes: z.string().nullable().optional(),
+  // ── RESIDCO Master Car List fields ──
+  rider_external_id: z.string().nullable().optional(),
+  lessee_name: z.string().nullable().optional(),
+  active_status: z.string().nullable().optional(),
+  data_source: z.string().nullable().optional(),
+  assignment_label: z.string().nullable().optional(),
+  lease_start_date: z.string().nullable().optional(),
+  lease_end_date: z.string().nullable().optional(),
+  lease_expiry: z.string().nullable().optional(),
+  monthly_rent_per_car: z.coerce.number().nullable().optional(),
+  monthly_depr_per_car: z.coerce.number().nullable().optional(),
+  total_bv_rider: z.coerce.number().nullable().optional(),
+  cars_on_rider_ar: z.coerce.number().int().nullable().optional(),
+  commodity_family: z.string().nullable().optional(),
+  commodity: z.string().nullable().optional(),
+  build_year: z.coerce.number().int().nullable().optional(),
+  lining: z.string().nullable().optional(),
+  dot_code: z.string().nullable().optional(),
+  comment_event_note: z.string().nullable().optional(),
+  description: z.string().nullable().optional(),
+  nbv: z.coerce.number().nullable().optional(),
+  oec: z.coerce.number().nullable().optional(),
+  oac: z.coerce.number().nullable().optional(),
 });
 export type InsertRailcar = z.infer<typeof insertRailcarSchema>;
 
