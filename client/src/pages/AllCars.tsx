@@ -219,9 +219,12 @@ function CarQuickView({ car, onClose }: { car: Row | null; onClose: () => void }
             <span className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">Railcar</span>
             <EntityBadge entity={r.entity} />
           </div>
-          <SheetTitle className="font-mono">{car.car_number}</SheetTitle>
+          <SheetTitle className="font-mono">
+            <span className="text-muted-foreground">{car.reporting_marks ?? ""}</span>
+            <span>{car.car_number}</span>
+          </SheetTitle>
           <SheetDescription>
-            {car.reporting_marks ?? "—"} · {car.car_type ?? "—"}
+            {car.car_type ?? "—"}
             {r.mechanical_designation ? ` · ${r.mechanical_designation}` : ""}
           </SheetDescription>
         </SheetHeader>
@@ -347,7 +350,9 @@ export default function AllCars() {
 
     if (search.trim()) {
       const q = search.trim().toLowerCase();
-      rows = rows.filter((r) =>
+      rows = rows.filter((r) => {
+        const combined = `${(r.reporting_marks ?? "").toLowerCase()}${r.car_number.toLowerCase()}`;
+        return combined.includes(q) ||
         r.car_number.toLowerCase().includes(q) ||
         r.reporting_marks?.toLowerCase().includes(q) ||
         (r as any).car_initial?.toLowerCase().includes(q) ||
@@ -359,8 +364,8 @@ export default function AllCars() {
         (r as any).lining_material?.toLowerCase().includes(q) ||
         r.assignment?.fleet_name?.toLowerCase().includes(q) ||
         r.assignment?.rider?.rider_name?.toLowerCase().includes(q) ||
-        r.assignment?.rider?.master_lease?.lease_number?.toLowerCase().includes(q)
-      );
+        r.assignment?.rider?.master_lease?.lease_number?.toLowerCase().includes(q);
+      });
     }
     if (entityFilter !== "all") rows = rows.filter((r) => (r as any).entity === entityFilter);
     if (statusFilter !== "all") rows = rows.filter((r) => r.status === statusFilter);

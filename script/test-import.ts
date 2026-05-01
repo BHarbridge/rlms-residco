@@ -15,6 +15,9 @@ import {
   parseDateCell,
   parseNumberCell,
   parseIntCell,
+  splitCarNumber,
+  deriveLeaseKey,
+  synthesizeLeaseNumber,
 } from "../shared/residco-import";
 
 let passed = 0;
@@ -156,6 +159,184 @@ eq(isTestCandidate({ car_number: "ABC1234", general_description: "placeholder ca
 for (const m of ["CSXT", "BNSF", "NS", "UP", "GATX", "TILX", "TFOX", "HWCX", "ATSF"]) {
   eq(isTestCandidate({ car_number: "ABC1234", reporting_marks: m }), false, `marks ${m} not test`);
 }
+
+// --- splitCarNumber ----------------------------------------------------------
+eq(splitCarNumber("TFOX88031"), { reporting_marks: "TFOX", car_number: "88031", car_initial: "TFOX" }, "split TFOX88031");
+eq(splitCarNumber("HWCX010823"), { reporting_marks: "HWCX", car_number: "010823", car_initial: "HWCX" }, "split HWCX010823 keeps leading zero");
+eq(splitCarNumber("BNSF 712345"), { reporting_marks: "BNSF", car_number: "712345", car_initial: "BNSF" }, "split BNSF 712345 (space tolerated)");
+eq(splitCarNumber("UP-12345"), { reporting_marks: "UP", car_number: "12345", car_initial: "UP" }, "split UP-12345 (dash tolerated)");
+eq(splitCarNumber("tfox88031"), { reporting_marks: "TFOX", car_number: "88031", car_initial: "TFOX" }, "split lowercases input");
+eq(splitCarNumber("88031"), { reporting_marks: null, car_number: "88031", car_initial: null }, "split: pure digits → no marks");
+eq(splitCarNumber("TFOX"), { reporting_marks: "TFOX", car_number: "", car_initial: "TFOX" }, "split: pure alpha → marks only");
+eq(splitCarNumber(""), { reporting_marks: null, car_number: "", car_initial: null }, "split: empty");
+eq(splitCarNumber(null), { reporting_marks: null, car_number: "", car_initial: null }, "split: null");
+eq(splitCarNumber("  TFOX88031  "), { reporting_marks: "TFOX", car_number: "88031", car_initial: "TFOX" }, "split: surrounding whitespace");
+
+// --- deriveLeaseKey ----------------------------------------------------------
+eq(deriveLeaseKey("Trinity Industries"), "Trinity Industries", "lease key from lessee");
+eq(deriveLeaseKey("  Trinity Industries  "), "Trinity Industries", "lease key trims");
+eq(deriveLeaseKey(""), null, "lease key empty → null");
+eq(deriveLeaseKey(null), null, "lease key null");
+eq(deriveLeaseKey(undefined), null, "lease key undefined");
+
+// --- synthesizeLeaseNumber ---------------------------------------------------
+eq(synthesizeLeaseNumber("Trinity Industries"), "RES-TRINITY-INDUSTRIES", "lease number slugify");
+eq(synthesizeLeaseNumber("IDLE (xAxiall)"), "RES-IDLE-XAXIALL", "lease number strips parens");
+eq(synthesizeLeaseNumber("ACME, Inc."), "RES-ACME-INC", "lease number strips comma+period");
+// Same lessee should always produce the same lease_number — i.e. import is idempotent
+eq(
+  synthesizeLeaseNumber("Trinity Industries") === synthesizeLeaseNumber("trinity industries"),
+  true,
+  "lease number is case-insensitive (idempotent re-import)"
+);
+
+// --- Entity → managed_category (PR #1 mapping must still hold) --------------
+// These were previously covered above but are repeated explicitly to satisfy
+// requirement #5 ("entity mapping Main->RESIDCO Owned and Rail Partners
+// Select->RPS").
+eq(deriveManagedCategory("Main"), "RESIDCO Owned", "explicit: Main -> RESIDCO Owned");
+eq(deriveManagedCategory("Rail Partners Select"), "RPS", "explicit: Rail Partners Select -> RPS");
+
+// --- Composite uniqueness key (marks|number) --------------------------------
+// Mirrors server dupeKey() so we test the contract that `TFOX|88031` and
+// `HWCX|88031` are distinct, even though the bare numeric is the same.
+const dupeKey = (marks: string | null | undefined, num: string | null | undefined) =>
+  `${(marks ?? "").trim().toUpperCase()}|${(num ?? "").trim().toUpperCase()}`;
+eq(dupeKey("TFOX", "88031"), "TFOX|88031", "dupeKey basic");
+eq(dupeKey("tfox", " 88031"), "TFOX|88031", "dupeKey normalises case+whitespace");
+eq(
+  dupeKey("TFOX", "88031") === dupeKey("HWCX", "88031"),
+  false,
+  "dupeKey: same number under different marks is NOT a duplicate"
+);
+eq(
+  dupeKey("TFOX", "88031") === dupeKey("TFOX", "88031"),
+  true,
+  "dupeKey: same marks+number IS a duplicate"
+);
+
+// --- Mini build-from-row simulation (mark/number split + rider+lessee ack) ---
+// We can't call buildRailcarFromRow from server here without dragging in
+// supabase, so we re-create the minimum split logic and assert it matches the
+// shared helper end-to-end on a realistic row.
+function buildIdentity(row: Record<string, unknown>) {
+  const n = normalizeRow(row);
+  const split = splitCarNumber((n as any).car_number);
+  const reporting_marks = (n as any).reporting_marks ?? split.reporting_marks;
+  return {
+    reporting_marks,
+    car_number: split.car_number || (typeof (n as any).car_number === "string" ? String((n as any).car_number).toUpperCase() : ""),
+    // Mirror server: explicit > split > marks fallback
+    car_initial: (n as any).car_initial ?? split.car_initial ?? reporting_marks,
+    lessee_name: (n as any).lessee_name ?? null,
+    rider_external_id: (n as any).rider_external_id ?? null,
+    entity: (n as any).entity ?? null,
+    managed_category: deriveManagedCategory((n as any).entity as string | null | undefined),
+  };
+}
+eq(
+  buildIdentity({
+    "Car Number": "TFOX88031",
+    "Lessee": "IDLE (xAxiall)",
+    "Rider ID": "EA1503",
+    "Entity": "Main",
+  }),
+  {
+    reporting_marks: "TFOX",
+    car_number: "88031",
+    car_initial: "TFOX",
+    lessee_name: "IDLE (xAxiall)",
+    rider_external_id: "EA1503",
+    entity: "Main",
+    managed_category: "RESIDCO Owned",
+  },
+  "buildIdentity: TFOX88031 / Main row produces full identity + relationships"
+);
+eq(
+  buildIdentity({
+    "Car Number": "HWCX010823",
+    "Lessee": "Trinity Industries",
+    "Rider ID": "RP200",
+    "Entity": "Rail Partners Select",
+  }),
+  {
+    reporting_marks: "HWCX",
+    car_number: "010823",
+    car_initial: "HWCX",
+    lessee_name: "Trinity Industries",
+    rider_external_id: "RP200",
+    entity: "Rail Partners Select",
+    managed_category: "RPS",
+  },
+  "buildIdentity: HWCX / RPS row"
+);
+// Explicit reporting_marks column wins over derived
+eq(
+  buildIdentity({
+    "Car Number": "88031",
+    "Reporting Marks": "TFOX",
+    "Lessee": "ACME",
+  }),
+  {
+    reporting_marks: "TFOX",
+    car_number: "88031",
+    car_initial: "TFOX",
+    lessee_name: "ACME",
+    rider_external_id: null,
+    entity: null,
+    managed_category: null,
+  },
+  "buildIdentity: explicit Reporting Marks column wins"
+);
+
+// --- MLA dedupe simulation (one MLA per distinct lessee in a batch) ---------
+// Mirrors the server commit logic at a unit-test level.
+function distinctMlaCount(rows: Array<{ lessee_name: string | null }>): number {
+  const set = new Set<string>();
+  for (const r of rows) {
+    const k = deriveLeaseKey(r.lessee_name);
+    if (k) set.add(k);
+  }
+  return set.size;
+}
+eq(
+  distinctMlaCount([
+    { lessee_name: "Trinity" },
+    { lessee_name: "Trinity" },
+    { lessee_name: "ACME" },
+    { lessee_name: null },
+    { lessee_name: " trinity " }, // not normalised by case — exposes case sensitivity
+  ]),
+  3,
+  "distinctMlaCount: groups by exact lessee name, drops null"
+);
+
+// --- Rider count simulation: distinct (lessee, rider_external_id) pairs ----
+function distinctRiderCount(
+  rows: Array<{ lessee_name: string | null; rider_external_id: string | null; assignment_label?: string | null }>
+): number {
+  const set = new Set<string>();
+  for (const r of rows) {
+    const lk = deriveLeaseKey(r.lessee_name);
+    if (!lk) continue;
+    const rname = (r.rider_external_id || r.assignment_label || lk)?.toString().trim();
+    if (!rname) continue;
+    set.add(`${lk}|${rname}`);
+  }
+  return set.size;
+}
+eq(
+  distinctRiderCount([
+    { lessee_name: "Trinity", rider_external_id: "EA1503" },
+    { lessee_name: "Trinity", rider_external_id: "EA1503" },
+    { lessee_name: "Trinity", rider_external_id: "EA1504" },
+    { lessee_name: "ACME",    rider_external_id: "EA1503" },  // EA1503 under different lessee = distinct rider
+    { lessee_name: "ACME",    rider_external_id: null, assignment_label: "Coal #5" },
+    { lessee_name: null,      rider_external_id: "EA0001" },  // dropped — no lessee
+  ]),
+  4,
+  "distinctRiderCount: groups by (lessee, rider name); falls back to assignment_label"
+);
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) {

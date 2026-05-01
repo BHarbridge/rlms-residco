@@ -177,7 +177,10 @@ function downloadRailcarsCsv(rows: RailcarWithAssignment[]) {
   };
   const get = (r: any, k: string) => (r[k] == null ? "" : String(r[k]));
   const rows_data = rows.map((r: any) => [
-    r.car_number,
+    // Combine marks + number so the export round-trips with the workbook
+    // ("TFOX" + "88031" -> "TFOX88031"). The "Reporting Marks" column below
+    // still carries marks alone for users who want them split.
+    `${r.reporting_marks ?? ""}${r.car_number ?? ""}`,
     get(r, "rider_external_id"),
     r.lessee_name ?? r.assignment?.fleet_name ?? "",
     r.entity ?? "",
@@ -313,12 +316,15 @@ export default function FleetRegistry() {
     let rows = railcars ?? [];
     if (search.trim()) {
       const q = search.trim().toLowerCase();
-      rows = rows.filter(
-        (r) =>
+      rows = rows.filter((r) => {
+        const combined = `${(r.reporting_marks ?? "").toLowerCase()}${r.car_number.toLowerCase()}`;
+        return (
           r.car_number.toLowerCase().includes(q) ||
           r.reporting_marks?.toLowerCase().includes(q) ||
+          combined.includes(q) ||
           r.assignment?.fleet_name?.toLowerCase().includes(q)
-      );
+        );
+      });
     }
     if (statusFilter !== "all") rows = rows.filter((r) => r.status === statusFilter);
     if (transitFilter === "in_transit") rows = rows.filter((r) => !!r.transit_status);

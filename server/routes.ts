@@ -17,6 +17,9 @@ import {
   parseDateCell,
   parseNumberCell,
   parseIntCell,
+  splitCarNumber,
+  deriveLeaseKey,
+  synthesizeLeaseNumber,
 } from "@shared/residco-import";
 import {
   calculateDv,
@@ -509,12 +512,15 @@ export async function registerRoutes(
 
       if (search) {
         const q = search.toLowerCase();
-        rows = rows.filter(
-          (r: any) =>
+        rows = rows.filter((r: any) => {
+          const combined = `${(r.reporting_marks ?? "").toLowerCase()}${(r.car_number ?? "").toLowerCase()}`;
+          return (
             r.car_number?.toLowerCase().includes(q) ||
             r.reporting_marks?.toLowerCase().includes(q) ||
+            combined.includes(q) ||
             r.assignment?.fleet_name?.toLowerCase().includes(q)
-        );
+          );
+        });
       }
       if (riderIdFilter) {
         rows = rows.filter((r: any) => r.assignment?.rider_id === riderIdFilter);
@@ -1023,8 +1029,18 @@ export async function registerRoutes(
       const v = (n as any)[k];
       return v == null ? "" : String(v).trim();
     };
-    const carNum = get("car_number").toUpperCase();
-    const marks = get("reporting_marks") || null;
+    // Workbook "Car Number" is the full identifier (e.g. "TFOX88031"). Split
+    // into reporting_marks ("TFOX") and the numeric portion ("88031") so the
+    // RLMS data model — which stores them separately and uniquely on
+    // (reporting_marks, car_number) — stays intact. If the workbook also
+    // provides explicit "Reporting Marks" / "Car Initial" columns, they win.
+    const rawCarNum = get("car_number");
+    const explicitMarks = get("reporting_marks") || null;
+    const explicitInitial = get("car_initial") || null;
+    const split = splitCarNumber(rawCarNum);
+    const marks = explicitMarks ?? split.reporting_marks;
+    const carInitial = explicitInitial ?? split.car_initial ?? marks;
+    const carNum = split.car_number || rawCarNum.toUpperCase();
     const carType = get("car_type") || null;
     const statusRaw = get("status");
     const status = statusRaw || "Active/In-Service";
@@ -1072,6 +1088,11 @@ export async function registerRoutes(
     return {
       car_number: carNum,
       reporting_marks: marks,
+      car_initial: carInitial,
+      // Full original workbook identifier — preserved for search/export so
+      // operators can still query by "TFOX88031" even though the DB stores
+      // marks and number separately.
+      full_car_number: marks ? `${marks}${carNum}` : carNum,
       car_type: carType,
       status,
       fleet_name: fleetName,
@@ -1116,25 +1137,32 @@ export async function registerRoutes(
       if (!Array.isArray(rows) || rows.length === 0)
         return res.status(400).json({ message: "No rows provided" });
 
-      // Fetch existing car numbers for dupe detection
+      // Fetch existing (reporting_marks + car_number) pairs for dupe detection.
+      // The DB enforces uniqueness on the combination, not car_number alone, so
+      // we must key on the same shape the import will write.
       const { data: existing } = await supabase
-        .from("railcars").select("car_number");
-      const existingNums = new Set((existing ?? []).map((r: any) => r.car_number?.trim().toUpperCase()));
+        .from("railcars").select("car_number, reporting_marks");
+      const dupeKey = (marks: string | null | undefined, num: string | null | undefined) =>
+        `${(marks ?? "").trim().toUpperCase()}|${(num ?? "").trim().toUpperCase()}`;
+      const existingNums = new Set(
+        (existing ?? []).map((r: any) => dupeKey(r.reporting_marks, r.car_number))
+      );
 
       // Fetch riders for name matching
       const { data: riders } = await supabase.from("riders").select("id, rider_name");
       const riderMap = new Map<string, number>();
       for (const r of riders ?? []) riderMap.set(r.rider_name.trim().toUpperCase(), r.id);
 
-      // Track in-batch duplicates (car_number repeated within the same upload)
+      // Track in-batch duplicates (marks+number repeated within the same upload)
       const seenInBatch = new Set<string>();
 
       const preview = rows.map((row, idx) => {
         const built = buildRailcarFromRow(row);
 
-        const isDbDupe = !!built.car_number && existingNums.has(built.car_number);
-        const isBatchDupe = !!built.car_number && seenInBatch.has(built.car_number);
-        if (built.car_number) seenInBatch.add(built.car_number);
+        const key = built.car_number ? dupeKey(built.reporting_marks, built.car_number) : "";
+        const isDbDupe = !!built.car_number && existingNums.has(key);
+        const isBatchDupe = !!built.car_number && seenInBatch.has(key);
+        if (built.car_number) seenInBatch.add(key);
 
         const riderId = built.rider_name ? (riderMap.get(built.rider_name.toUpperCase()) ?? null) : null;
         const riderUnknown = !!built.rider_name && riderId === null;
@@ -1184,44 +1212,204 @@ export async function registerRoutes(
       if (validRows.length === 0)
         return res.status(400).json({ message: "No valid rows to import" });
 
-      // Strip preview-only fields and insert in chunks. Supabase + Postgres can
-      // handle 14k rows easily but a single insert is rejected over the body
-      // size limit, so we batch.
+      const BATCH = 500;
+      const now = new Date().toISOString();
+
+      // ---- 1. Build (lessee → master_lease) and (rider_external_id → rider) maps ----
+      // The workbook does not carry an MLA number, so we treat each distinct
+      // Lessee as one master_lease. Within an MLA, each distinct Rider ID is
+      // one rider. Existing MLAs/riders in the DB are reused (matched by
+      // synthesized lease_number for MLAs, by rider_name for riders) so
+      // re-running an import is idempotent.
+
+      // Distinct lessees we'll need to ensure exist as MLAs.
+      const lesseeSet = new Set<string>();
+      for (const r of validRows) {
+        const k = deriveLeaseKey(r.lessee_name);
+        if (k) lesseeSet.add(k);
+      }
+
+      // Pre-load existing MLAs we'd match.
+      const wantedLeaseNumbers = Array.from(lesseeSet).map(synthesizeLeaseNumber);
+      const lesseeToMlaId = new Map<string, number>();
+      if (wantedLeaseNumbers.length > 0) {
+        const { data: existingMlas, error: mlaErr } = await supabase
+          .from("master_leases").select("id, lease_number, lessee").in("lease_number", wantedLeaseNumbers);
+        if (mlaErr) throw mlaErr;
+        for (const m of existingMlas ?? []) {
+          if (m.lessee) lesseeToMlaId.set(m.lessee.trim(), m.id);
+        }
+      }
+
+      // Insert any missing MLAs.
+      const newMlaPayloads = Array.from(lesseeSet)
+        .filter((lessee) => !lesseeToMlaId.has(lessee))
+        .map((lessee) => ({
+          lease_number: synthesizeLeaseNumber(lessee),
+          lessee,
+          lessor: "RESIDCO",
+          notes: "Auto-created by RESIDCO Master Car List import",
+        }));
+      let mlasCreated = 0;
+      for (let i = 0; i < newMlaPayloads.length; i += BATCH) {
+        const slice = newMlaPayloads.slice(i, i + BATCH);
+        const { data: ins, error } = await supabase
+          .from("master_leases").insert(slice).select("id, lessee");
+        if (error) throw error;
+        for (const m of ins ?? []) {
+          if (m.lessee) lesseeToMlaId.set(m.lessee.trim(), m.id);
+        }
+        mlasCreated += ins?.length ?? 0;
+      }
+
+      // Distinct riders. A rider is identified by (Rider ID OR rider_name) per
+      // lessee. We use rider_external_id as the natural key when present,
+      // falling back to rider_name. Within the row, we now know the
+      // master_lease_id from the lessee map.
+      type RiderSpec = {
+        master_lease_id: number;
+        rider_name: string;       // schedule_number / display name
+        external_id: string | null;
+        effective_date: string | null;
+        expiration_date: string | null;
+        permissible_commodity: string | null;
+        monthly_rent_per_car: number | null;
+        lease_type: string | null;
+      };
+      const riderKeyOf = (mlaId: number, name: string) => `${mlaId}|${name.trim().toUpperCase()}`;
+      const riderSpecs = new Map<string, RiderSpec>();
+      for (const r of validRows) {
+        const lessee = deriveLeaseKey(r.lessee_name);
+        if (!lessee) continue;
+        const mlaId = lesseeToMlaId.get(lessee);
+        if (!mlaId) continue;
+        // rider name = the workbook Rider ID (schedule label) or fall back to assignment label / lessee
+        const riderName = (r.rider_external_id || r.assignment_label || lessee).toString().trim();
+        if (!riderName) continue;
+        const key = riderKeyOf(mlaId, riderName);
+        if (!riderSpecs.has(key)) {
+          riderSpecs.set(key, {
+            master_lease_id: mlaId,
+            rider_name: riderName,
+            external_id: r.rider_external_id ?? null,
+            effective_date: r.lease_start_date ?? null,
+            expiration_date: r.lease_expiry ?? r.lease_end_date ?? null,
+            permissible_commodity: r.commodity ?? null,
+            monthly_rent_per_car: r.monthly_rent_per_car ?? null,
+            lease_type: r.lease_type ?? null,
+          });
+        }
+      }
+
+      // Pre-load existing riders for those MLAs.
+      const riderKeyToId = new Map<string, number>();
+      const mlaIds = Array.from(new Set(Array.from(riderSpecs.values()).map((s) => s.master_lease_id)));
+      if (mlaIds.length > 0) {
+        const { data: existingRiders, error: rErr } = await supabase
+          .from("riders").select("id, master_lease_id, rider_name").in("master_lease_id", mlaIds);
+        if (rErr) throw rErr;
+        for (const er of existingRiders ?? []) {
+          riderKeyToId.set(riderKeyOf(er.master_lease_id, er.rider_name), er.id);
+        }
+      }
+
+      // Insert any missing riders.
+      const newRiderPayloads = Array.from(riderSpecs.values())
+        .filter((s) => !riderKeyToId.has(riderKeyOf(s.master_lease_id, s.rider_name)))
+        .map((s) => ({
+          master_lease_id: s.master_lease_id,
+          rider_name: s.rider_name,
+          schedule_number: s.external_id,
+          effective_date: s.effective_date,
+          expiration_date: s.expiration_date,
+          permissible_commodity: s.permissible_commodity,
+          monthly_rent_per_car: s.monthly_rent_per_car,
+        }));
+      let ridersCreated = 0;
+      for (let i = 0; i < newRiderPayloads.length; i += BATCH) {
+        const slice = newRiderPayloads.slice(i, i + BATCH);
+        const { data: ins, error } = await supabase
+          .from("riders").insert(slice).select("id, master_lease_id, rider_name");
+        if (error) throw error;
+        for (const er of ins ?? []) {
+          riderKeyToId.set(riderKeyOf(er.master_lease_id, er.rider_name), er.id);
+        }
+        ridersCreated += ins?.length ?? 0;
+      }
+
+      // ---- 2. Insert railcars (strip preview-only fields) ----
       const stripPreviewOnly = (r: any) => {
         const {
           _row, _normalized,
-          rider_name, fleet_name, rider_id,
+          rider_name, fleet_name, rider_id, full_car_number,
           is_dupe, is_batch_dupe, errors, warnings, valid,
           ...rest
         } = r;
-        // managed_category is derived by trigger — let the DB compute it,
-        // but we still send our value as a safety net in case the trigger
-        // hasn't been deployed yet.
         return rest;
       };
       const carInserts = validRows.map(stripPreviewOnly);
 
-      const BATCH = 500;
       let importedCount = 0;
-      const carNumToId = new Map<string, number>();
+      // Map composite key (marks|number) → railcar id
+      const carKeyToId = new Map<string, number>();
+      const carKey = (m: string | null | undefined, n: string | null | undefined) =>
+        `${(m ?? "").trim().toUpperCase()}|${(n ?? "").trim().toUpperCase()}`;
       for (let i = 0; i < carInserts.length; i += BATCH) {
         const slice = carInserts.slice(i, i + BATCH);
         const { data: inserted, error: insErr } = await supabase
-          .from("railcars").insert(slice).select("id, car_number");
+          .from("railcars").insert(slice).select("id, car_number, reporting_marks");
         if (insErr) throw insErr;
-        for (const c of inserted ?? []) carNumToId.set(c.car_number, c.id);
+        for (const c of inserted ?? []) {
+          carKeyToId.set(carKey(c.reporting_marks, c.car_number), c.id);
+        }
         importedCount += inserted?.length ?? 0;
       }
 
-      // Build assignments for rows that resolved to an internal rider_id.
-      const assignments = validRows
-        .filter((r) => r.rider_id && carNumToId.has(r.car_number))
-        .map((r) => ({
-          railcar_id: carNumToId.get(r.car_number),
-          rider_id: r.rider_id,
-          fleet_name: r.fleet_name ?? null,
-          assigned_at: new Date().toISOString(),
-        }));
+      // ---- 3. Build railcar_assignments using the rider map we just built ----
+      // Prefer the rider we created from this row; fall back to a workbook
+      // rider_name match for rows that had no Lessee but did name a rider.
+      const { data: legacyRiders } = await supabase.from("riders").select("id, rider_name");
+      const legacyRiderByName = new Map<string, number>();
+      for (const r of legacyRiders ?? []) {
+        legacyRiderByName.set(r.rider_name.trim().toUpperCase(), r.id);
+      }
+
+      const assignments: Array<{
+        railcar_id: number;
+        rider_id: number;
+        fleet_name: string | null;
+        sub_lease_number: string | null;
+        sublease_expiration_date: string | null;
+        assigned_at: string;
+      }> = [];
+      for (const r of validRows) {
+        const cid = carKeyToId.get(carKey(r.reporting_marks, r.car_number));
+        if (!cid) continue;
+        let riderId: number | null = null;
+        const lessee = deriveLeaseKey(r.lessee_name);
+        if (lessee) {
+          const mlaId = lesseeToMlaId.get(lessee);
+          if (mlaId) {
+            const rname = (r.rider_external_id || r.assignment_label || lessee).toString().trim();
+            riderId = riderKeyToId.get(riderKeyOf(mlaId, rname)) ?? null;
+          }
+        }
+        if (!riderId && r.rider_name) {
+          riderId = legacyRiderByName.get(r.rider_name.trim().toUpperCase()) ?? null;
+        }
+        if (!riderId && r.rider_id) {
+          riderId = r.rider_id;
+        }
+        if (!riderId) continue;
+        assignments.push({
+          railcar_id: cid,
+          rider_id: riderId,
+          fleet_name: r.fleet_name ?? r.lessee_name ?? null,
+          sub_lease_number: r.assignment_label ?? null,
+          sublease_expiration_date: r.lease_expiry ?? r.lease_end_date ?? null,
+          assigned_at: now,
+        });
+      }
 
       if (assignments.length > 0) {
         for (let i = 0; i < assignments.length; i += BATCH) {
@@ -1236,6 +1424,8 @@ export async function registerRoutes(
         ok: true,
         imported: importedCount,
         assigned: assignments.length,
+        mlas_created: mlasCreated,
+        riders_created: ridersCreated,
         skipped: totalSubmitted - importedCount,
       });
     } catch (err) { errHandler(res, err); }
@@ -1360,16 +1550,23 @@ export async function registerRoutes(
       }));
 
       const matchedCars = cars.filter((c: any) => {
-        return terms.some(
-          (t) =>
-            c.car_number?.toLowerCase().includes(t.toLowerCase()) ||
-            c.reporting_marks?.toLowerCase().includes(t.toLowerCase()) ||
-            c.assignment?.fleet_name?.toLowerCase().includes(t.toLowerCase()) ||
-            c.assignment?.rider?.rider_name?.toLowerCase().includes(t.toLowerCase()) ||
-            c.assignment?.rider?.master_lease?.lessee?.toLowerCase().includes(t.toLowerCase()) ||
-            c.assignment?.rider?.master_lease?.lease_number?.toLowerCase().includes(t.toLowerCase()) ||
-            c.assignment?.sub_lease_number?.toLowerCase().includes(t.toLowerCase())
-        );
+        // Concatenated form ("TFOX88031") so users can search by the full
+        // workbook identifier even though the DB stores marks and number
+        // separately.
+        const combined = `${(c.reporting_marks ?? "").toLowerCase()}${(c.car_number ?? "").toLowerCase()}`;
+        return terms.some((tRaw) => {
+          const t = tRaw.toLowerCase();
+          return (
+            c.car_number?.toLowerCase().includes(t) ||
+            c.reporting_marks?.toLowerCase().includes(t) ||
+            combined.includes(t) ||
+            c.assignment?.fleet_name?.toLowerCase().includes(t) ||
+            c.assignment?.rider?.rider_name?.toLowerCase().includes(t) ||
+            c.assignment?.rider?.master_lease?.lessee?.toLowerCase().includes(t) ||
+            c.assignment?.rider?.master_lease?.lease_number?.toLowerCase().includes(t) ||
+            c.assignment?.sub_lease_number?.toLowerCase().includes(t)
+          );
+        });
       });
 
       // --- Riders: match rider_name, schedule_number, lessee ---

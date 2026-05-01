@@ -7,6 +7,7 @@ export type WorkbookRow = Record<string, unknown>;
 /** Canonical field names in the railcars table that this importer writes. */
 export type CanonicalRailcarField =
   | "car_number"
+  | "car_initial"
   | "rider_external_id"
   | "lessee_name"
   | "entity"
@@ -66,6 +67,7 @@ const HEADER_ALIASES: Record<string, CanonicalRailcarField> = (() => {
   };
 
   add("car_number", "car_number", "carnumber", "Car Number", "Car #", "Car No");
+  add("car_initial", "car_initial", "carinitial", "Car Initial", "Initial");
   add("rider_external_id", "rider_external_id", "Rider ID", "RiderID", "RiderId");
   add("lessee_name", "lessee_name", "Lessee", "Lessee Name");
   add("entity", "entity", "Entity");
@@ -201,6 +203,77 @@ export function parseNumberCell(v: unknown): number | null {
   if (!s) return null;
   const n = Number(s);
   return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Derive the key used to dedupe master_leases during import. The workbook does
+ * not provide an MLA number, so we use the lessee name as the natural key.
+ * Returns null if the lessee is missing/blank — those rows can't form an MLA
+ * relationship and will be imported without one.
+ */
+export function deriveLeaseKey(lesseeName: string | null | undefined): string | null {
+  if (!lesseeName) return null;
+  const s = String(lesseeName).trim();
+  return s ? s : null;
+}
+
+/**
+ * Synthesize a deterministic master-lease number from the lessee name. Used
+ * when the workbook has no explicit lease number — matches what the live DB
+ * post-repair settled on (one MLA per lessee, lease_number = "RES-<slug>").
+ */
+export function synthesizeLeaseNumber(lesseeName: string): string {
+  const slug = String(lesseeName)
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40);
+  return `RES-${slug || "UNKNOWN"}`;
+}
+
+/**
+ * Split a workbook "Car Number" like "TFOX88031" into reporting marks (alpha
+ * prefix) and the numeric tail. The RLMS data model stores `reporting_marks`
+ * (e.g. "TFOX") on the left and `car_number` (e.g. "88031") on the right; the
+ * UI concatenates them for display. `car_initial` mirrors `reporting_marks`
+ * for legacy code paths.
+ *
+ * If the input has no leading alpha prefix (purely numeric), reporting_marks
+ * is null and the whole value is treated as the number. If the input is
+ * already split (no digits), the whole value becomes reporting_marks and
+ * car_number is empty.
+ *
+ * Whitespace and an optional space/dash between the prefix and number are
+ * tolerated. The output is uppercased.
+ */
+export function splitCarNumber(raw: unknown): {
+  reporting_marks: string | null;
+  car_number: string;
+  car_initial: string | null;
+} {
+  const s = String(raw ?? "").trim().toUpperCase().replace(/\s+/g, "");
+  if (!s) return { reporting_marks: null, car_number: "", car_initial: null };
+  // Match leading alpha prefix, optional separator (space/dash already stripped),
+  // then trailing digits (possibly with embedded letters like "X" suffix).
+  const m = /^([A-Z]+)[-_]?(\d.*)$/.exec(s);
+  if (m) {
+    return { reporting_marks: m[1], car_number: m[2], car_initial: m[1] };
+  }
+  // Pure digits (no marks)
+  if (/^\d+$/.test(s)) {
+    return { reporting_marks: null, car_number: s, car_initial: null };
+  }
+  // Letters only — keep as marks; no number
+  if (/^[A-Z]+$/.test(s)) {
+    return { reporting_marks: s, car_number: "", car_initial: s };
+  }
+  // Anything else: best-effort — strip leading alpha as marks if present
+  const m2 = /^([A-Z]+)(.*)$/.exec(s);
+  if (m2 && m2[1]) {
+    return { reporting_marks: m2[1], car_number: m2[2], car_initial: m2[1] };
+  }
+  return { reporting_marks: null, car_number: s, car_initial: null };
 }
 
 /** Parse an integer cell. */
