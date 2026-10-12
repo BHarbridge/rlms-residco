@@ -1,0 +1,2011 @@
+From 47b0c0cd9e733df50808b297c30703f922cbf021 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Mon, 12 Oct 2026 20:47:52 +0000
+Subject: [PATCH] Phase 1 VCF close-out: honor manual active_source and
+ collapse duplicate open periods.
+
+Python monthly import now skips active/status writes when active_source is manual, matching the API. Both import paths match open assignment_history by car+rider+start so a later ASSIGNMENT_ID no longer inserts a second open period. Status-derivation trigger and the 120-collapse SQL are in-repo only; no production writes until Bruce signs the preview.
+---
+ docs/IMPORT_WRITE_BOUNDARIES.md               |  11 +-
+ docs/VCF_CLOSEOUT_PHASE1.md                   | 107 ++++++++
+ .../20261012_derive_active_from_status.sql    |  36 +++
+ .../apply_collapse_identical_open_periods.sql |  87 +++++++
+ ...apse_identical_open_periods.2026-10-12.csv | 121 +++++++++
+ ...review_collapse_identical_open_periods.sql |  76 ++++++
+ script/preview_differing_open_periods_66.sql  |  57 +++++
+ script/preview_phase1_test_queries.sql        |  64 +++++
+ ...llback_collapse_identical_open_periods.sql |  38 +++
+ script/vcf_assignment_closeout.py             | 223 ++++++++++++++++
+ script/vcf_assignment_closeout_test.py        | 108 ++++++++
+ script/vcf_monthly_import.py                  | 187 +++++++++-----
+ server/routes.ts                              | 200 +++++----------
+ shared/vcf-assignment-closeout.test.ts        | 147 +++++++++++
+ shared/vcf-assignment-closeout.ts             | 237 ++++++++++++++++++
+ shared/vcf-import.ts                          |  14 +-
+ 16 files changed, 1506 insertions(+), 207 deletions(-)
+ create mode 100644 docs/VCF_CLOSEOUT_PHASE1.md
+ create mode 100644 migrations/20261012_derive_active_from_status.sql
+ create mode 100644 script/apply_collapse_identical_open_periods.sql
+ create mode 100644 script/preview_collapse_identical_open_periods.2026-10-12.csv
+ create mode 100644 script/preview_collapse_identical_open_periods.sql
+ create mode 100644 script/preview_differing_open_periods_66.sql
+ create mode 100644 script/preview_phase1_test_queries.sql
+ create mode 100644 script/rollback_collapse_identical_open_periods.sql
+ create mode 100644 script/vcf_assignment_closeout.py
+ create mode 100644 script/vcf_assignment_closeout_test.py
+ create mode 100644 shared/vcf-assignment-closeout.test.ts
+ create mode 100644 shared/vcf-assignment-closeout.ts
+
+diff --git a/docs/IMPORT_WRITE_BOUNDARIES.md b/docs/IMPORT_WRITE_BOUNDARIES.md
+index afdb1e2..3872ca3 100644
+--- a/docs/IMPORT_WRITE_BOUNDARIES.md
++++ b/docs/IMPORT_WRITE_BOUNDARIES.md
+@@ -34,7 +34,16 @@ Named never-write lists in `shared/rider-import-guard.ts`:
+ 
+ ## Valid Car File (`POST /api/import/vcf/commit`)
+ 
+-Does **not** insert `riders`, `master_leases`, or `accounts`.
++Does **not** insert `riders`, `master_leases`, or `accounts`. Does **not** write
++`railcar_assignments` or `railcars.current_assignment_id` (Phase 2, not approved).
++
++Open `assignment_history` periods match on car + rider + start date. A null
++`assignment_id_ext` and a later filled id are the same period (the 118-car
++duplicate). Changed periods close the old open row at the incoming start and
++insert the new one. `active_source = 'manual'` and already-inactive cars skip
++assignment-history writes entirely (history stays frozen). The Python monthly
++script (`script/vcf_monthly_import.py`) uses the same rules, including the
++manual-active protection that used to exist only on the API path.
+ 
+ After commit, `governLeaseDates` re-applies Asset Report lease/OL dates onto `riders.expiration_date` and the car-level copies (`lease_end_date` / `lease_expiry` / `estimated_lease_expiry` / `lease_start_date` from `riders.effective_date`). V_Valid car dates are used only for OLs the Asset Report omits. It does not write `effective_date` on riders.
+ 
+diff --git a/docs/VCF_CLOSEOUT_PHASE1.md b/docs/VCF_CLOSEOUT_PHASE1.md
+new file mode 100644
+index 0000000..6cd0c50
+--- /dev/null
++++ b/docs/VCF_CLOSEOUT_PHASE1.md
+@@ -0,0 +1,107 @@
++# VCF close-out Phase 1
++
++Bruce approved this phase on 2026-10-12, conditional on signing the 120-collapse
++preview before any data write. Phase 2 is **not** approved.
++
++## In this PR (code only until the preview is signed)
++
++1. **Python monthly script honors `active_source = 'manual'`.** Urgent and
++   independent of the rest. A Python run can no longer revive a car retired by
++   a remark. Already-inactive cars also skip assignment-history writes.
++2. **Assignment-history close-out** in `POST /api/import/vcf/commit` and
++   `script/vcf_monthly_import.py`. Same open period = same car + rider + start
++   date. A null `assignment_id_ext` and a later filled id are the same period.
++   A changed period closes the old open row at the incoming start and inserts
++   the new one. Re-running the same file inserts nothing and changes nothing.
++   No `railcar_assignments` / `current_assignment_id` writes.
++3. **Trigger** `migrations/20261012_derive_active_from_status.sql` — derive
++   `active` / `active_status` from `status`. Does not derive `fleet_status`.
++   Columns stay writable. **Not applied to production in this PR.**
++4. **120-collapse SQL** — preview, guarded apply, rollback. No deletes.
++   Excludes cars 23602 and 23603.
++
++## Do not do yet
++
++- Write `railcar_assignments` or `current_assignment_id` from VCF.
++- Enforce “at most one open history period per active car” (log-only first,
++  after the 66 are resolved).
++- Close the 66 differing duplicates (need a signed per-car review table vs the
++  latest Valid Car File). Query: `script/preview_differing_open_periods_66.sql`.
++- Mass-close the 38 inactive differing duplicates or the 1,748 open periods on
++  inactive cars. Leave frozen.
++- Touch cars 23602 / 23603 (OFOX 32115 / 032115) in any cleanup list.
++
++## 120-collapse preview (sign before write)
++
++Query: `script/preview_collapse_identical_open_periods.sql`
++
++Production read 2026-10-12 (no writes):
++
++| | count |
++|---|---|
++| Active cars with >1 open period (excl. 23602/23603) | 186 |
++| Identical rider+start duplicates (this collapse) | 120 |
++| Keep rows (all have `assignment_id_ext`) | 120 |
++| Close rows | 120 |
++| Close rows with null `assignment_id_ext` | 118 |
++| Both-filled (keep latest `moved_at`): IARX 531070, OFCX 003449 | 2 |
++| Leaked 23602/23603 | 0 |
++
++Example: TFOX 002107 keep id **41074** (`assignment_id_ext` 558, moved 2026-09-11),
++close id **32** (null id, moved 2026-08-13), `end_date = start_date` 2026-07-21.
++
++Full result: `script/preview_collapse_identical_open_periods.2026-10-12.csv`
++
++Apply (after sign-off, one transaction): `script/apply_collapse_identical_open_periods.sql`
++(raises until the guard is removed). Re-run `script/preview_phase1_test_queries.sql`
++before commit. After this collapse, multi-open active cars should be **66**.
++
++Rollback: null `end_date` and restore `active` on the saved close ids
++(`script/rollback_collapse_identical_open_periods.sql`). No row is deleted.
++
++## `v_valid_export_rows`
++
++**No change to columns or meaning.** The estimate / RepairSMART rebuild still
++reads the same view. After the signed 120-collapse, the duplicate *current*
++rows disappear (the closed twin stays in the view as a same-day-ended
++historical period). Tell Bruce before any future change to that view.
++
++## 5-versus-9 `OL1503` reconciliation
++
++Section 6 test (c) is: active cars with **exactly one** open history period
++whose rider disagrees with `railcar_assignments` (exclude `SOLD`).
++
++Production 2026-10-12, that query returns **5** TFOX cars (088036, 088068,
++088069, 088098, 088100) — history `OL1503` vs lease `EA1503`. `TEST 999012`
++also matches the SQL if present; it is not a fleet car.
++
++Claude’s looser match (rider name **or** sub-lease number equal to `EA1503`)
++is a different rule and a different set. It is not an error in the 5.
++
++SQL: `script/preview_phase1_test_queries.sql` query 3.
++
++## Natural-key unique index
++
++`migrations/20260813_vcf_history_natural_keys.sql` (`uq_assignment_history_vcf_period`)
++is **not** in production. Confirmed 2026-10-12: `assignment_history` has only
++`assignment_history_pkey`, `idx_assignment_history_railcar`, and
++`idx_assignment_history_railcar_period`. It is also absent from the applied
++Supabase migration list. Phase 1 does not add it (the 118-car bug is the
++reason that index would have been the wrong open-period key).
++
++## Prefixes
++
++No `EX` rows in RLMS cars, history, or riders. Handle `EA`, `xOL`, and `xEA`
++as today. `EX` waits on Bruce’s team.
++
++## Monthly import path
++
++Still unanswered whether the monthly run is the API commit or the Python
++script. Both paths now share the close-out rules. The Python `active_source`
++fix ships regardless.
++
++## Rollback of the importer / trigger
++
++Importer changes revert with a deploy. Drop the trigger to undo status
++derivation. Phase 1 cleanup only sets `end_date`, `active`, and a comment on
++history rows.
+diff --git a/migrations/20261012_derive_active_from_status.sql b/migrations/20261012_derive_active_from_status.sql
+new file mode 100644
+index 0000000..59578d6
+--- /dev/null
++++ b/migrations/20261012_derive_active_from_status.sql
+@@ -0,0 +1,36 @@
++-- Derive railcars.active and railcars.active_status from railcars.status.
++-- Phase 1 (Bruce 2026-10-12): status is the authority.
++--   status = 'Active/In-Service' → active true, active_status 'Active'
++--   any other non-blank status  → active false, active_status 'Inactive'
++-- Does NOT derive fleet_status (Leased / Idle / Sold / Abatement stays independent).
++-- Columns remain writable so remark_railcars and VCF keep sending the triad;
++-- this trigger overwrites the derived pair from status on the same write.
++-- File only in this PR — do not apply to production until the Phase 1 deploy.
++
++CREATE OR REPLACE FUNCTION public.railcars_derive_active_from_status()
++RETURNS trigger
++LANGUAGE plpgsql
++AS $$
++BEGIN
++  IF NEW.status IS NULL OR btrim(NEW.status) = '' THEN
++    RETURN NEW;
++  END IF;
++  IF btrim(NEW.status) = 'Active/In-Service' THEN
++    NEW.active := true;
++    NEW.active_status := 'Active';
++  ELSE
++    NEW.active := false;
++    NEW.active_status := 'Inactive';
++  END IF;
++  RETURN NEW;
++END;
++$$;
++
++DROP TRIGGER IF EXISTS trg_railcars_derive_active_from_status ON public.railcars;
++CREATE TRIGGER trg_railcars_derive_active_from_status
++  BEFORE INSERT OR UPDATE OF status, active, active_status ON public.railcars
++  FOR EACH ROW
++  EXECUTE FUNCTION public.railcars_derive_active_from_status();
++
++COMMENT ON FUNCTION public.railcars_derive_active_from_status() IS
++  'Keep railcars.active / active_status aligned with status. Does not touch fleet_status. Rollback: DROP TRIGGER trg_railcars_derive_active_from_status ON public.railcars; DROP FUNCTION public.railcars_derive_active_from_status();';
+diff --git a/script/apply_collapse_identical_open_periods.sql b/script/apply_collapse_identical_open_periods.sql
+new file mode 100644
+index 0000000..4998816
+--- /dev/null
++++ b/script/apply_collapse_identical_open_periods.sql
+@@ -0,0 +1,87 @@
++-- DO NOT RUN until Bruce signs script/preview_collapse_identical_open_periods.sql.
++-- This file raises on purpose. Remove the guard block below only after sign-off.
++-- One transaction. No deletes. Excludes 23602 / 23603.
++-- Sets end_date = start_date, active = false, and a comment on the close row.
++-- Rollback: script/rollback_collapse_identical_open_periods.sql using the
++-- close_id list saved from the signed preview.
++
++DO $$
++BEGIN
++  RAISE EXCEPTION
++    'Blocked: apply only after Bruce signs the 120-collapse preview. Remove this guard to run.';
++END
++$$;
++
++BEGIN;
++
++WITH opens AS (
++  SELECT
++    ah.id,
++    ah.railcar_id,
++    ah.rider_external_id,
++    ah.start_date,
++    ah.assignment_id_ext,
++    ah.moved_at,
++    ah.comment
++  FROM public.assignment_history ah
++  JOIN public.railcars r ON r.id = ah.railcar_id
++  WHERE r.active IS TRUE
++    AND r.id NOT IN (23602, 23603)
++    AND ah.end_date IS NULL
++),
++multi AS (
++  SELECT railcar_id
++  FROM opens
++  GROUP BY railcar_id
++  HAVING count(*) > 1
++),
++pairs AS (
++  SELECT o.*
++  FROM opens o
++  JOIN multi m ON m.railcar_id = o.railcar_id
++),
++identical_cars AS (
++  SELECT railcar_id
++  FROM pairs
++  GROUP BY railcar_id
++  HAVING count(DISTINCT concat_ws('|', coalesce(rider_external_id, ''), coalesce(start_date::text, ''))) = 1
++),
++ranked AS (
++  SELECT
++    p.*,
++    row_number() OVER (
++      PARTITION BY p.railcar_id
++      ORDER BY
++        (p.assignment_id_ext IS NOT NULL AND btrim(p.assignment_id_ext) <> '') DESC,
++        p.moved_at DESC NULLS LAST,
++        p.id DESC
++    ) AS keep_rank
++  FROM pairs p
++  JOIN identical_cars i ON i.railcar_id = p.railcar_id
++),
++to_close AS (
++  SELECT id, start_date, comment
++  FROM ranked
++  WHERE keep_rank > 1
++)
++UPDATE public.assignment_history ah
++SET
++  end_date = to_close.start_date,
++  active = false,
++  comment = CASE
++    WHEN coalesce(btrim(to_close.comment), '') = '' THEN
++      'VCF close-out: collapsed duplicate open period (same rider+start)'
++    WHEN to_close.comment LIKE '%collapsed duplicate open period%' THEN
++      to_close.comment
++    ELSE
++      to_close.comment || ' | VCF close-out: collapsed duplicate open period (same rider+start)'
++  END
++FROM to_close
++WHERE ah.id = to_close.id
++  AND ah.end_date IS NULL
++  AND ah.railcar_id NOT IN (23602, 23603)
++RETURNING ah.id AS closed_id, ah.railcar_id, ah.end_date;
++
++-- Re-run Phase 1 test queries (script/preview_phase1_test_queries.sql) before COMMIT.
++-- COMMIT;
++-- ROLLBACK;
+diff --git a/script/preview_collapse_identical_open_periods.2026-10-12.csv b/script/preview_collapse_identical_open_periods.2026-10-12.csv
+new file mode 100644
+index 0000000..e99d321
+--- /dev/null
++++ b/script/preview_collapse_identical_open_periods.2026-10-12.csv
+@@ -0,0 +1,121 @@
++railcar_id,reporting_marks,car_number,rider_external_id,start_date,keep_id,keep_assignment_id_ext,keep_moved_at,close_id,close_assignment_id_ext,close_moved_at,close_end_date_will_be
++15563,AEX,022881,EA2420,2026-07-09,41125,560,2026-09-11 13:12:21.789+00,156,,2026-08-13 03:21:05.822283+00,2026-07-09
++44323,IARX,531070,EA2404,2024-03-11,39127,468,2026-09-11 13:12:21.789+00,39126,468,2026-08-13 03:21:05.822283+00,2024-03-11
++15568,KCS,310100,EA2608,2026-07-28,41130,561,2026-09-11 13:12:21.789+00,166,,2026-08-13 03:21:05.822283+00,2026-07-28
++15569,KCS,310110,EA2608,2026-07-28,41131,561,2026-09-11 13:12:21.789+00,167,,2026-08-13 03:21:05.822283+00,2026-07-28
++15570,KCS,310122,EA2608,2026-07-28,41132,561,2026-09-11 13:12:21.789+00,168,,2026-08-13 03:21:05.822283+00,2026-07-28
++15571,KCS,310151,EA2608,2026-07-28,41133,561,2026-09-11 13:12:21.789+00,169,,2026-08-13 03:21:05.822283+00,2026-07-28
++15572,KCS,310155,EA2608,2026-07-28,41134,561,2026-09-11 13:12:21.789+00,170,,2026-08-13 03:21:05.822283+00,2026-07-28
++15573,KCS,310162,EA2608,2026-07-28,41135,561,2026-09-11 13:12:21.789+00,171,,2026-08-13 03:21:05.822283+00,2026-07-28
++15574,KCS,310404,EA2608,2026-07-28,41136,561,2026-09-11 13:12:21.789+00,172,,2026-08-13 03:21:05.822283+00,2026-07-28
++15575,KCS,310413,EA2608,2026-07-28,41137,561,2026-09-11 13:12:21.789+00,173,,2026-08-13 03:21:05.822283+00,2026-07-28
++15576,KCS,310437,EA2608,2026-07-28,41138,561,2026-09-11 13:12:21.789+00,174,,2026-08-13 03:21:05.822283+00,2026-07-28
++15577,KCS,310444,EA2608,2026-07-28,41139,561,2026-09-11 13:12:21.789+00,175,,2026-08-13 03:21:05.822283+00,2026-07-28
++15578,KCS,310449,EA2608,2026-07-28,41140,561,2026-09-11 13:12:21.789+00,176,,2026-08-13 03:21:05.822283+00,2026-07-28
++15579,KCS,310454,EA2608,2026-07-28,41141,561,2026-09-11 13:12:21.789+00,177,,2026-08-13 03:21:05.822283+00,2026-07-28
++15580,KCS,310483,EA2608,2026-07-28,41142,561,2026-09-11 13:12:21.789+00,178,,2026-08-13 03:21:05.822283+00,2026-07-28
++15581,KCS,310487,EA2608,2026-07-28,41143,561,2026-09-11 13:12:21.789+00,179,,2026-08-13 03:21:05.822283+00,2026-07-28
++15582,KCS,310489,EA2608,2026-07-28,41144,561,2026-09-11 13:12:21.789+00,180,,2026-08-13 03:21:05.822283+00,2026-07-28
++15583,KCS,310499,EA2608,2026-07-28,41145,561,2026-09-11 13:12:21.789+00,181,,2026-08-13 03:21:05.822283+00,2026-07-28
++15584,KCS,310504,EA2608,2026-07-28,41146,561,2026-09-11 13:12:21.789+00,182,,2026-08-13 03:21:05.822283+00,2026-07-28
++15585,KCS,310517,EA2608,2026-07-28,41147,561,2026-09-11 13:12:21.789+00,183,,2026-08-13 03:21:05.822283+00,2026-07-28
++15586,KCS,310522,EA2608,2026-07-28,41148,561,2026-09-11 13:12:21.789+00,184,,2026-08-13 03:21:05.822283+00,2026-07-28
++15587,KCS,310528,EA2608,2026-07-28,41149,561,2026-09-11 13:12:21.789+00,185,,2026-08-13 03:21:05.822283+00,2026-07-28
++15588,KCS,310532,EA2608,2026-07-28,41150,561,2026-09-11 13:12:21.789+00,186,,2026-08-13 03:21:05.822283+00,2026-07-28
++15589,KCS,310536,EA2608,2026-07-28,41151,561,2026-09-11 13:12:21.789+00,187,,2026-08-13 03:21:05.822283+00,2026-07-28
++15590,KCS,310539,EA2608,2026-07-28,41152,561,2026-09-11 13:12:21.789+00,188,,2026-08-13 03:21:05.822283+00,2026-07-28
++15591,KCS,310568,EA2608,2026-07-28,41153,561,2026-09-11 13:12:21.789+00,189,,2026-08-13 03:21:05.822283+00,2026-07-28
++15592,KCS,310588,EA2608,2026-07-28,41154,561,2026-09-11 13:12:21.789+00,190,,2026-08-13 03:21:05.822283+00,2026-07-28
++15593,KCS,310589,EA2608,2026-07-28,41155,561,2026-09-11 13:12:21.789+00,191,,2026-08-13 03:21:05.822283+00,2026-07-28
++15594,KCS,310590,EA2608,2026-07-28,41156,561,2026-09-11 13:12:21.789+00,192,,2026-08-13 03:21:05.822283+00,2026-07-28
++15595,KCS,310605,EA2608,2026-07-28,41157,561,2026-09-11 13:12:21.789+00,193,,2026-08-13 03:21:05.822283+00,2026-07-28
++15596,KCS,310626,EA2608,2026-07-28,41158,561,2026-09-11 13:12:21.789+00,194,,2026-08-13 03:21:05.822283+00,2026-07-28
++15597,KCS,310632,EA2608,2026-07-28,41159,561,2026-09-11 13:12:21.789+00,195,,2026-08-13 03:21:05.822283+00,2026-07-28
++15598,KCS,310644,EA2608,2026-07-28,41160,561,2026-09-11 13:12:21.789+00,196,,2026-08-13 03:21:05.822283+00,2026-07-28
++15599,KCS,310646,EA2608,2026-07-28,41161,561,2026-09-11 13:12:21.789+00,197,,2026-08-13 03:21:05.822283+00,2026-07-28
++15600,KCS,310650,EA2608,2026-07-28,41162,561,2026-09-11 13:12:21.789+00,198,,2026-08-13 03:21:05.822283+00,2026-07-28
++15601,KCS,310661,EA2608,2026-07-28,41163,561,2026-09-11 13:12:21.789+00,199,,2026-08-13 03:21:05.822283+00,2026-07-28
++15602,KCS,310664,EA2608,2026-07-28,41164,561,2026-09-11 13:12:21.789+00,200,,2026-08-13 03:21:05.822283+00,2026-07-28
++15603,KCS,310671,EA2608,2026-07-28,41165,561,2026-09-11 13:12:21.789+00,201,,2026-08-13 03:21:05.822283+00,2026-07-28
++15604,KCS,310676,EA2608,2026-07-28,41166,561,2026-09-11 13:12:21.789+00,202,,2026-08-13 03:21:05.822283+00,2026-07-28
++15605,KCS,310683,EA2608,2026-07-28,41167,561,2026-09-11 13:12:21.789+00,203,,2026-08-13 03:21:05.822283+00,2026-07-28
++15606,KCS,310685,EA2608,2026-07-28,41168,561,2026-09-11 13:12:21.789+00,204,,2026-08-13 03:21:05.822283+00,2026-07-28
++15607,KCS,310720,EA2608,2026-07-28,41169,561,2026-09-11 13:12:21.789+00,205,,2026-08-13 03:21:05.822283+00,2026-07-28
++15608,KCS,310723,EA2608,2026-07-28,41170,561,2026-09-11 13:12:21.789+00,206,,2026-08-13 03:21:05.822283+00,2026-07-28
++15609,KCS,310755,EA2608,2026-07-28,41171,561,2026-09-11 13:12:21.789+00,207,,2026-08-13 03:21:05.822283+00,2026-07-28
++15610,KCS,310777,EA2608,2026-07-28,41172,561,2026-09-11 13:12:21.789+00,208,,2026-08-13 03:21:05.822283+00,2026-07-28
++15611,KCS,310801,EA2608,2026-07-28,41173,561,2026-09-11 13:12:21.789+00,209,,2026-08-13 03:21:05.822283+00,2026-07-28
++15612,KCS,310804,EA2608,2026-07-28,41174,561,2026-09-11 13:12:21.789+00,210,,2026-08-13 03:21:05.822283+00,2026-07-28
++15613,KCS,310809,EA2608,2026-07-28,41175,561,2026-09-11 13:12:21.789+00,211,,2026-08-13 03:21:05.822283+00,2026-07-28
++15614,KCS,310811,EA2608,2026-07-28,41176,561,2026-09-11 13:12:21.789+00,212,,2026-08-13 03:21:05.822283+00,2026-07-28
++15615,KCS,310813,EA2608,2026-07-28,41177,561,2026-09-11 13:12:21.789+00,213,,2026-08-13 03:21:05.822283+00,2026-07-28
++15616,KCS,310815,EA2608,2026-07-28,41178,561,2026-09-11 13:12:21.789+00,214,,2026-08-13 03:21:05.822283+00,2026-07-28
++15617,KCS,310818,EA2608,2026-07-28,41179,561,2026-09-11 13:12:21.789+00,215,,2026-08-13 03:21:05.822283+00,2026-07-28
++15618,KCS,310823,EA2608,2026-07-28,41180,561,2026-09-11 13:12:21.789+00,216,,2026-08-13 03:21:05.822283+00,2026-07-28
++15619,KCS,310834,EA2608,2026-07-28,41181,561,2026-09-11 13:12:21.789+00,217,,2026-08-13 03:21:05.822283+00,2026-07-28
++15620,KCS,310836,EA2608,2026-07-28,41182,561,2026-09-11 13:12:21.789+00,218,,2026-08-13 03:21:05.822283+00,2026-07-28
++15621,KCS,310839,EA2608,2026-07-28,41183,561,2026-09-11 13:12:21.789+00,219,,2026-08-13 03:21:05.822283+00,2026-07-28
++15622,KCS,310844,EA2608,2026-07-28,41184,561,2026-09-11 13:12:21.789+00,220,,2026-08-13 03:21:05.822283+00,2026-07-28
++15623,KCS,310848,EA2608,2026-07-28,41185,561,2026-09-11 13:12:21.789+00,221,,2026-08-13 03:21:05.822283+00,2026-07-28
++15624,KCS,310865,EA2608,2026-07-28,41186,561,2026-09-11 13:12:21.789+00,222,,2026-08-13 03:21:05.822283+00,2026-07-28
++15625,KCS,310887,EA2608,2026-07-28,41187,561,2026-09-11 13:12:21.789+00,223,,2026-08-13 03:21:05.822283+00,2026-07-28
++15626,KCS,310897,EA2608,2026-07-28,41188,561,2026-09-11 13:12:21.789+00,224,,2026-08-13 03:21:05.822283+00,2026-07-28
++15627,KCS,310899,EA2608,2026-07-28,41189,561,2026-09-11 13:12:21.789+00,225,,2026-08-13 03:21:05.822283+00,2026-07-28
++16579,OFCX,003449,OL2513,2025-11-25,2366,533,2026-09-11 13:12:21.789+00,2365,533,2026-08-13 03:21:05.822283+00,2025-11-25
++15510,TFOX,002006,EA1739,2026-07-21,41068,558,2026-09-11 13:12:21.789+00,14,,2026-08-13 05:14:35.314199+00,2026-07-21
++15511,TFOX,002019,EA1739,2026-07-27,41069,558,2026-09-11 13:12:21.789+00,17,,2026-08-13 03:21:05.822283+00,2026-07-27
++15512,TFOX,002023,EA1739,2026-07-21,41070,558,2026-09-11 13:12:21.789+00,20,,2026-08-13 03:21:05.822283+00,2026-07-21
++15513,TFOX,002035,EA1739,2026-07-21,41071,558,2026-09-11 13:12:21.789+00,23,,2026-08-13 05:14:35.314199+00,2026-07-21
++15514,TFOX,002063,EA1739,2026-07-21,41072,558,2026-09-11 13:12:21.789+00,26,,2026-08-13 03:21:05.822283+00,2026-07-21
++15515,TFOX,002105,EA1739,2026-07-21,41073,558,2026-09-11 13:12:21.789+00,29,,2026-08-13 03:21:05.822283+00,2026-07-21
++15516,TFOX,002107,EA1739,2026-07-21,41074,558,2026-09-11 13:12:21.789+00,32,,2026-08-13 03:21:05.822283+00,2026-07-21
++15517,TFOX,002138,EA1739,2026-07-21,41075,558,2026-09-11 13:12:21.789+00,35,,2026-08-13 03:21:05.822283+00,2026-07-21
++15518,TFOX,002150,EA1739,2026-07-21,41076,558,2026-09-11 13:12:21.789+00,38,,2026-08-13 03:21:05.822283+00,2026-07-21
++15519,TFOX,002156,EA1739,2026-08-04,41077,558,2026-09-11 13:12:21.789+00,41,,2026-08-13 03:21:05.822283+00,2026-08-04
++15520,TFOX,002157,EA1739,2026-08-04,41078,558,2026-09-11 13:12:21.789+00,44,,2026-08-13 03:21:05.822283+00,2026-08-04
++15521,TFOX,002182,EA1739,2026-07-21,41079,558,2026-09-11 13:12:21.789+00,47,,2026-08-13 03:21:05.822283+00,2026-07-21
++15522,TFOX,002187,EA1739,2026-07-24,41080,558,2026-09-11 13:12:21.789+00,50,,2026-08-13 03:21:05.822283+00,2026-07-24
++15523,TFOX,002216,EA1739,2026-07-21,41081,558,2026-09-11 13:12:21.789+00,53,,2026-08-13 03:21:05.822283+00,2026-07-21
++15524,TFOX,002225,EA1739,2026-07-21,41082,558,2026-09-11 13:12:21.789+00,56,,2026-08-13 03:21:05.822283+00,2026-07-21
++15525,TFOX,002233,EA1739,2026-07-21,41083,558,2026-09-11 13:12:21.789+00,59,,2026-08-13 03:21:05.822283+00,2026-07-21
++15526,TFOX,002238,EA1739,2026-07-21,41084,558,2026-09-11 13:12:21.789+00,62,,2026-08-13 03:21:05.822283+00,2026-07-21
++15527,TFOX,002243,EA1739,2026-07-21,41085,558,2026-09-11 13:12:21.789+00,65,,2026-08-13 03:21:05.822283+00,2026-07-21
++15528,TFOX,002249,EA1739,2026-07-21,41086,558,2026-09-11 13:12:21.789+00,68,,2026-08-13 03:21:05.822283+00,2026-07-21
++15529,TFOX,002264,EA1739,2026-07-21,41087,558,2026-09-11 13:12:21.789+00,71,,2026-08-13 03:21:05.822283+00,2026-07-21
++15530,TFOX,002271,EA1739,2026-07-21,41088,558,2026-09-11 13:12:21.789+00,74,,2026-08-13 03:21:05.822283+00,2026-07-21
++15531,TFOX,002283,EA1739,2026-07-21,41089,558,2026-09-11 13:12:21.789+00,77,,2026-08-13 03:21:05.822283+00,2026-07-21
++15532,TFOX,002304,EA1739,2026-07-21,41090,558,2026-09-11 13:12:21.789+00,80,,2026-08-13 03:21:05.822283+00,2026-07-21
++15533,TFOX,002306,EA1739,2026-08-04,41091,558,2026-09-11 13:12:21.789+00,83,,2026-08-13 03:21:05.822283+00,2026-08-04
++15534,TFOX,002308,EA1739,2026-07-21,41092,558,2026-09-11 13:12:21.789+00,86,,2026-08-13 03:21:05.822283+00,2026-07-21
++15535,TFOX,002315,EA1739,2026-07-21,41093,558,2026-09-11 13:12:21.789+00,89,,2026-08-13 03:21:05.822283+00,2026-07-21
++15536,TFOX,002318,EA1739,2026-08-04,41094,558,2026-09-11 13:12:21.789+00,92,,2026-08-13 03:21:05.822283+00,2026-08-04
++15537,TFOX,002332,EA1739,2026-07-21,41095,558,2026-09-11 13:12:21.789+00,95,,2026-08-13 03:21:05.822283+00,2026-07-21
++15538,TFOX,002334,EA1739,2026-07-21,41096,558,2026-09-11 13:12:21.789+00,98,,2026-08-13 03:21:05.822283+00,2026-07-21
++15539,TFOX,002339,EA1739,2026-07-27,41097,558,2026-09-11 13:12:21.789+00,101,,2026-08-13 03:21:05.822283+00,2026-07-27
++15540,TFOX,002342,EA1739,2026-07-21,41098,558,2026-09-11 13:12:21.789+00,104,,2026-08-13 03:21:05.822283+00,2026-07-21
++15541,TFOX,002343,EA1739,2026-07-21,41099,558,2026-09-11 13:12:21.789+00,107,,2026-08-13 03:21:05.822283+00,2026-07-21
++15542,TFOX,002347,EA1739,2026-07-21,41100,558,2026-09-11 13:12:21.789+00,110,,2026-08-13 03:21:05.822283+00,2026-07-21
++15543,TFOX,002351,EA1739,2026-07-21,41101,558,2026-09-11 13:12:21.789+00,113,,2026-08-13 03:21:05.822283+00,2026-07-21
++15544,TFOX,002358,EA1739,2026-08-04,41102,558,2026-09-11 13:12:21.789+00,116,,2026-08-13 03:21:05.822283+00,2026-08-04
++15545,TFOX,002359,EA1739,2026-07-21,41103,558,2026-09-11 13:12:21.789+00,119,,2026-08-13 03:21:05.822283+00,2026-07-21
++15546,TFOX,009615,EA1816,2026-07-21,41104,559,2026-09-11 13:12:21.789+00,122,,2026-08-13 03:21:05.822283+00,2026-07-21
++15547,TFOX,009616,EA1816,2026-07-21,41105,559,2026-09-11 13:12:21.789+00,124,,2026-08-13 03:21:05.822283+00,2026-07-21
++15548,TFOX,009620,EA1816,2026-08-04,41106,559,2026-09-11 13:12:21.789+00,126,,2026-08-13 03:21:05.822283+00,2026-08-04
++15549,TFOX,009634,EA1816,2026-07-21,41107,559,2026-09-11 13:12:21.789+00,128,,2026-08-13 03:21:05.822283+00,2026-07-21
++15550,TFOX,009647,EA1816,2026-08-03,41108,559,2026-09-11 13:12:21.789+00,130,,2026-08-13 03:21:05.822283+00,2026-08-03
++15551,TFOX,022726,EA2420,2026-05-28,41113,560,2026-09-11 13:12:21.789+00,132,,2026-08-13 03:21:05.822283+00,2026-05-28
++15552,TFOX,022729,EA2420,2026-07-13,41114,560,2026-09-11 13:12:21.789+00,134,,2026-08-13 03:21:05.822283+00,2026-07-13
++15553,TFOX,022760,EA2420,2026-05-28,41115,560,2026-09-11 13:12:21.789+00,136,,2026-08-13 03:21:05.822283+00,2026-05-28
++15554,TFOX,022762,EA2420,2026-07-13,41116,560,2026-09-11 13:12:21.789+00,138,,2026-08-13 03:21:05.822283+00,2026-07-13
++15555,TFOX,022772,EA2420,2026-05-28,41117,560,2026-09-11 13:12:21.789+00,140,,2026-08-13 03:21:05.822283+00,2026-05-28
++15556,TFOX,022783,EA2420,2026-05-28,41118,560,2026-09-11 13:12:21.789+00,142,,2026-08-13 03:21:05.822283+00,2026-05-28
++15557,TFOX,022791,EA2420,2026-05-27,41119,560,2026-09-11 13:12:21.789+00,144,,2026-08-13 03:21:05.822283+00,2026-05-27
++15558,TFOX,022798,EA2420,2026-05-28,41120,560,2026-09-11 13:12:21.789+00,146,,2026-08-13 03:21:05.822283+00,2026-05-28
++15559,TFOX,022807,EA2420,2026-05-28,41121,560,2026-09-11 13:12:21.789+00,148,,2026-08-13 03:21:05.822283+00,2026-05-28
++15560,TFOX,022811,EA2420,2026-07-14,41122,560,2026-09-11 13:12:21.789+00,150,,2026-08-13 03:21:05.822283+00,2026-07-14
++15561,TFOX,022852,EA2420,2026-07-14,41123,560,2026-09-11 13:12:21.789+00,152,,2026-08-13 03:21:05.822283+00,2026-07-14
++15562,TFOX,022877,EA2420,2026-05-28,41124,560,2026-09-11 13:12:21.789+00,154,,2026-08-13 03:21:05.822283+00,2026-05-28
++15564,TFOX,022882,EA2420,2026-05-28,41126,560,2026-09-11 13:12:21.789+00,158,,2026-08-13 03:21:05.822283+00,2026-05-28
++15565,TFOX,022898,EA2420,2026-05-28,41127,560,2026-09-11 13:12:21.789+00,160,,2026-08-13 03:21:05.822283+00,2026-05-28
++15566,TFOX,026816,EA2420,2026-05-28,41128,560,2026-09-11 13:12:21.789+00,162,,2026-08-13 03:21:05.822283+00,2026-05-28
++15567,TFOX,026817,EA2420,2026-05-28,41129,560,2026-09-11 13:12:21.789+00,164,,2026-08-13 03:21:05.822283+00,2026-05-28
+diff --git a/script/preview_collapse_identical_open_periods.sql b/script/preview_collapse_identical_open_periods.sql
+new file mode 100644
+index 0000000..3d4ed45
+--- /dev/null
++++ b/script/preview_collapse_identical_open_periods.sql
+@@ -0,0 +1,76 @@
++-- READ ONLY. Preview for the 120 identical-duplicate collapse.
++-- Bruce signs this result set before any write.
++-- Same open period = same car + rider + start_date.
++-- Keep: filled assignment_id_ext, else latest moved_at, else latest id.
++-- Close: end_date = start_date (no deletes).
++-- Excludes cars 23602 and 23603. Does not list them.
++-- Snapshot of this query from production 2026-10-12 is
++-- script/preview_collapse_identical_open_periods.2026-10-12.csv
++
++WITH opens AS (
++  SELECT
++    ah.id,
++    ah.railcar_id,
++    ah.rider_external_id,
++    ah.start_date,
++    ah.assignment_id_ext,
++    ah.assignment_label,
++    ah.active,
++    ah.moved_at,
++    ah.comment,
++    r.reporting_marks,
++    r.car_number
++  FROM public.assignment_history ah
++  JOIN public.railcars r ON r.id = ah.railcar_id
++  WHERE r.active IS TRUE
++    AND r.id NOT IN (23602, 23603)
++    AND ah.end_date IS NULL
++),
++multi AS (
++  SELECT railcar_id
++  FROM opens
++  GROUP BY railcar_id
++  HAVING count(*) > 1
++),
++pairs AS (
++  SELECT o.*
++  FROM opens o
++  JOIN multi m ON m.railcar_id = o.railcar_id
++),
++identical_cars AS (
++  SELECT railcar_id
++  FROM pairs
++  GROUP BY railcar_id
++  HAVING count(DISTINCT concat_ws('|', coalesce(rider_external_id, ''), coalesce(start_date::text, ''))) = 1
++),
++ranked AS (
++  SELECT
++    p.*,
++    row_number() OVER (
++      PARTITION BY p.railcar_id
++      ORDER BY
++        (p.assignment_id_ext IS NOT NULL AND btrim(p.assignment_id_ext) <> '') DESC,
++        p.moved_at DESC NULLS LAST,
++        p.id DESC
++    ) AS keep_rank
++  FROM pairs p
++  JOIN identical_cars i ON i.railcar_id = p.railcar_id
++),
++keep AS (SELECT * FROM ranked WHERE keep_rank = 1),
++close AS (SELECT * FROM ranked WHERE keep_rank > 1)
++SELECT
++  k.railcar_id,
++  k.reporting_marks,
++  k.car_number,
++  k.rider_external_id,
++  k.start_date::text AS start_date,
++  k.id AS keep_id,
++  k.assignment_id_ext AS keep_assignment_id_ext,
++  k.moved_at AS keep_moved_at,
++  c.id AS close_id,
++  c.assignment_id_ext AS close_assignment_id_ext,
++  c.moved_at AS close_moved_at,
++  c.start_date::text AS close_end_date_will_be
++FROM keep k
++JOIN close c ON c.railcar_id = k.railcar_id
++ORDER BY k.reporting_marks, k.car_number;
+diff --git a/script/preview_differing_open_periods_66.sql b/script/preview_differing_open_periods_66.sql
+new file mode 100644
+index 0000000..4d2e161
+--- /dev/null
++++ b/script/preview_differing_open_periods_66.sql
+@@ -0,0 +1,57 @@
++-- READ ONLY. Phase 2 review table — not approved to close.
++-- 66 active cars with more than one open period that differ on rider or start.
++-- Bruce signs this (plus the latest VCF current row) before anything closes.
++-- Excludes 23602 / 23603. File current columns are left for the latest workbook.
++
++WITH opens AS (
++  SELECT
++    ah.id,
++    ah.railcar_id,
++    ah.rider_external_id,
++    ah.start_date,
++    ah.assignment_id_ext,
++    ah.assignment_label,
++    ah.moved_at,
++    r.reporting_marks,
++    r.car_number,
++    r.rider_external_id AS car_rider
++  FROM public.assignment_history ah
++  JOIN public.railcars r ON r.id = ah.railcar_id
++  WHERE r.active IS TRUE
++    AND r.id NOT IN (23602, 23603)
++    AND ah.end_date IS NULL
++),
++multi AS (
++  SELECT railcar_id
++  FROM opens
++  GROUP BY railcar_id
++  HAVING count(*) > 1
++),
++pairs AS (
++  SELECT o.*
++  FROM opens o
++  JOIN multi m ON m.railcar_id = o.railcar_id
++),
++differing AS (
++  SELECT railcar_id
++  FROM pairs
++  GROUP BY railcar_id
++  HAVING count(DISTINCT concat_ws('|', coalesce(rider_external_id, ''), coalesce(start_date::text, ''))) > 1
++)
++SELECT
++  p.railcar_id,
++  p.reporting_marks,
++  p.car_number,
++  p.car_rider AS car_current_rider,
++  p.id AS history_id,
++  p.rider_external_id AS history_rider,
++  p.start_date,
++  p.assignment_id_ext,
++  p.assignment_label,
++  p.moved_at,
++  NULL::text AS file_current_rider,
++  NULL::text AS file_current_start,
++  NULL::text AS file_current_assignment_id
++FROM pairs p
++JOIN differing d ON d.railcar_id = p.railcar_id
++ORDER BY p.reporting_marks, p.car_number, p.start_date, p.id;
+diff --git a/script/preview_phase1_test_queries.sql b/script/preview_phase1_test_queries.sql
+new file mode 100644
+index 0000000..de7907c
+--- /dev/null
++++ b/script/preview_phase1_test_queries.sql
+@@ -0,0 +1,64 @@
++-- Phase 1 test queries (read only). Run before and after the signed 120-collapse.
++-- Cars 23602 and 23603 are excluded from every cleanup count.
++
++-- 1. Status triad mismatch. Must stay 0.
++SELECT count(*) AS mismatch_rows
++FROM public.v_railcar_active_status_mismatch;
++
++-- 2. Active cars with more than one open assignment_history period.
++-- Before 120-collapse: 186. After 120-collapse: 66. After the 66 + importer: 0.
++SELECT count(*) AS active_cars_multi_open
++FROM (
++  SELECT ah.railcar_id
++  FROM public.assignment_history ah
++  JOIN public.railcars r ON r.id = ah.railcar_id
++  WHERE r.active IS TRUE
++    AND r.id NOT IN (23602, 23603)
++    AND ah.end_date IS NULL
++  GROUP BY ah.railcar_id
++  HAVING count(*) > 1
++) s;
++
++-- 3. Cursor test (c): exactly one open history period whose rider disagrees
++-- with railcar_assignments (exclude SOLD). Production 2026-10-12 = 5 TFOX
++-- OL1503-vs-EA1503 cars plus TEST 999012 if present. Claude's looser
++-- "lease is EA1503" match is a different set — see docs/VCF_CLOSEOUT_PHASE1.md.
++WITH one_open AS (
++  SELECT ah.railcar_id
++  FROM public.assignment_history ah
++  JOIN public.railcars r ON r.id = ah.railcar_id
++  WHERE r.active IS TRUE
++    AND r.id NOT IN (23602, 23603)
++    AND ah.end_date IS NULL
++  GROUP BY ah.railcar_id
++  HAVING count(*) = 1
++)
++SELECT
++  r.id,
++  r.reporting_marks,
++  r.car_number,
++  ah.rider_external_id AS hist_rider,
++  ra.sub_lease_number,
++  rd.rider_name
++FROM one_open o
++JOIN public.railcars r ON r.id = o.railcar_id
++JOIN public.assignment_history ah
++  ON ah.railcar_id = r.id AND ah.end_date IS NULL
++JOIN public.railcar_assignments ra ON ra.id::text = r.current_assignment_id
++LEFT JOIN public.riders rd ON rd.id = ra.rider_id
++WHERE coalesce(ah.rider_external_id, '') <> 'SOLD'
++  AND coalesce(ra.sub_lease_number, '') <> 'SOLD'
++  AND coalesce(rd.rider_name, '') <> 'SOLD'
++  AND coalesce(ah.rider_external_id, '')
++        IS DISTINCT FROM coalesce(rd.rider_name, ra.sub_lease_number, '')
++  AND coalesce(ah.rider_external_id, '')
++        IS DISTINCT FROM coalesce(ra.sub_lease_number, '')
++ORDER BY r.reporting_marks, r.car_number;
++
++-- 4. Confirm the VCF natural-key unique index is still absent (repo file
++-- migrations/20260813_vcf_history_natural_keys.sql was never applied).
++SELECT indexname
++FROM pg_indexes
++WHERE schemaname = 'public'
++  AND tablename = 'assignment_history'
++ORDER BY indexname;
+diff --git a/script/rollback_collapse_identical_open_periods.sql b/script/rollback_collapse_identical_open_periods.sql
+new file mode 100644
+index 0000000..9a7822c
+--- /dev/null
++++ b/script/rollback_collapse_identical_open_periods.sql
+@@ -0,0 +1,38 @@
++-- Rollback for the 120 identical-duplicate collapse.
++-- Restores the signed close_id list: end_date NULL, active true.
++-- Does not delete anything. Does not touch cars 23602 / 23603.
++-- Replace the id list with the close_id column from the signed preview
++-- (script/preview_collapse_identical_open_periods.2026-10-12.csv).
++
++DO $$
++BEGIN
++  RAISE EXCEPTION
++    'Blocked: rollback only after a signed apply. Remove this guard and confirm the id list.';
++END
++$$;
++
++BEGIN;
++
++UPDATE public.assignment_history
++SET
++  end_date = NULL,
++  active = true,
++  comment = NULLIF(
++    btrim(
++      regexp_replace(
++        coalesce(comment, ''),
++        '( \| )?VCF close-out: collapsed duplicate open period \(same rider\+start\)',
++        '',
++        'g'
++      )
++    ),
++    ''
++  )
++WHERE id IN (
++  -- paste close_id values from the signed preview
++  0
++)
++  AND railcar_id NOT IN (23602, 23603);
++
++-- COMMIT;
++-- ROLLBACK;
+diff --git a/script/vcf_assignment_closeout.py b/script/vcf_assignment_closeout.py
+new file mode 100644
+index 0000000..320dd4e
+--- /dev/null
++++ b/script/vcf_assignment_closeout.py
+@@ -0,0 +1,223 @@
++"""VCF assignment-history close-out (Phase 1). Mirrors shared/vcf-assignment-closeout.ts."""
++
++from __future__ import annotations
++
++CLOSE_DUP = "VCF close-out: collapsed duplicate open period (same rider+start)"
++CLOSE_CHANGED = "VCF close-out: period changed; closed at incoming start"
++
++VCF_MANUAL_PROTECTED_RAILCAR_FIELDS = (
++    "active",
++    "active_status",
++    "status",
++    "active_source",
++)
++
++
++def open_period_match_key(railcar_id, rider_external_id, start_date) -> str:
++    return f"{railcar_id}|{str(rider_external_id or '').strip()}|{str(start_date or '').strip()}"
++
++
++def skip_vcf_assignment_writes(car) -> bool:
++    if str(car.get("active_source") or "").strip() == "manual":
++        return True
++    return car.get("active") is not True
++
++
++def strip_manual_protected_railcar_fields(payload: dict) -> dict:
++    out = dict(payload)
++    for key in VCF_MANUAL_PROTECTED_RAILCAR_FIELDS:
++        out.pop(key, None)
++    return out
++
++
++def ah_natural_key(railcar_id, assignment_id_ext, start_date, end_date=None) -> str:
++    return "|".join(
++        [
++            str(railcar_id),
++            str(assignment_id_ext or "").strip(),
++            str(start_date or "").strip(),
++            str(end_date or "").strip(),
++        ]
++    )
++
++
++def is_open(row) -> bool:
++    end = row.get("end_date")
++    return end is None or str(end).strip() == ""
++
++
++def append_comment(existing, note: str) -> str:
++    cur = str(existing or "").strip()
++    if not cur:
++        return note
++    if note in cur:
++        return cur
++    return f"{cur} | {note}"
++
++
++def content_equal_ah(existing, payload) -> bool:
++    fields = (
++        "rider_external_id",
++        "assignment_label",
++        "start_date",
++        "end_date",
++        "active",
++        "comment",
++        "assignment_id_ext",
++        "reason",
++    )
++    for f in fields:
++        if str(existing.get(f) if existing.get(f) is not None else "") != str(
++            payload.get(f) if payload.get(f) is not None else ""
++        ):
++            return False
++    return True
++
++
++def _prefer_filled_then_later(a, b):
++    a_filled = 1 if a.get("assignment_id_ext") else 0
++    b_filled = 1 if b.get("assignment_id_ext") else 0
++    if a_filled != b_filled:
++        return a if a_filled > b_filled else b
++    if str(b.get("start_date") or "") > str(a.get("start_date") or ""):
++        return b
++    if str(b.get("start_date") or "") < str(a.get("start_date") or ""):
++        return a
++    return b if (b.get("id") or 0) > (a.get("id") or 0) else a
++
++
++def plan_vcf_assignment_closeout(existing_rows, incoming):
++    """Return a list of {op, ...} actions. Never deletes."""
++    actions = []
++    incoming_open = [p for p in incoming if is_open(p)]
++    incoming_closed = [p for p in incoming if not is_open(p)]
++    existing_open = [r for r in existing_rows if is_open(r)]
++
++    by_natural = {}
++    for row in existing_rows:
++        by_natural[
++            ah_natural_key(
++                row.get("railcar_id"),
++                row.get("assignment_id_ext"),
++                row.get("start_date"),
++                row.get("end_date"),
++            )
++        ] = row
++
++    for hist in incoming_closed:
++        key = ah_natural_key(
++            hist.get("railcar_id"),
++            hist.get("assignment_id_ext"),
++            hist.get("start_date"),
++            hist.get("end_date"),
++        )
++        existing = by_natural.get(key)
++        if not existing:
++            actions.append({"op": "insert", "payload": hist})
++        elif content_equal_ah(existing, hist):
++            actions.append({"op": "unchanged", "existing_id": existing["id"]})
++        else:
++            actions.append({"op": "update", "existing_id": existing["id"], "payload": hist})
++
++    if not incoming_open:
++        return actions
++
++    incoming_by_match = {}
++    for hist in incoming_open:
++        match_key = open_period_match_key(
++            hist.get("railcar_id"),
++            hist.get("rider_external_id"),
++            hist.get("start_date"),
++        )
++        prev = incoming_by_match.get(match_key)
++        incoming_by_match[match_key] = _prefer_filled_then_later(prev, hist) if prev else hist
++
++    latest_incoming_start = None
++    starts = sorted(str(p.get("start_date") or "") for p in incoming_open)
++    if starts:
++        latest_incoming_start = starts[-1] or None
++
++    claimed = set()
++    for match_key, current_open in incoming_by_match.items():
++        matches = [
++            row
++            for row in existing_open
++            if row["id"] not in claimed
++            and open_period_match_key(
++                row.get("railcar_id"),
++                row.get("rider_external_id"),
++                row.get("start_date"),
++            )
++            == match_key
++        ]
++        keep = None
++        if matches:
++            keep = sorted(
++                matches,
++                key=lambda row: (
++                    1 if row.get("assignment_id_ext") else 0,
++                    row.get("id") or 0,
++                ),
++                reverse=True,
++            )[0]
++        for row in matches:
++            if keep is not None and row["id"] == keep["id"]:
++                continue
++            claimed.add(row["id"])
++            actions.append(
++                {
++                    "op": "close",
++                    "existing_id": row["id"],
++                    "end_date": current_open.get("start_date"),
++                    "comment": append_comment(row.get("comment"), CLOSE_DUP),
++                }
++            )
++        if keep is not None:
++            claimed.add(keep["id"])
++            merged = dict(current_open)
++            merged["assignment_id_ext"] = (
++                current_open.get("assignment_id_ext") or keep.get("assignment_id_ext")
++            )
++            if content_equal_ah(keep, merged):
++                actions.append({"op": "unchanged", "existing_id": keep["id"]})
++            else:
++                actions.append({"op": "update", "existing_id": keep["id"], "payload": merged})
++        else:
++            actions.append({"op": "insert", "payload": current_open})
++
++    for row in existing_open:
++        if row["id"] in claimed:
++            continue
++        actions.append(
++            {
++                "op": "close",
++                "existing_id": row["id"],
++                "end_date": latest_incoming_start,
++                "comment": append_comment(row.get("comment"), CLOSE_CHANGED),
++            }
++        )
++    return actions
++
++
++def closeout_stats(actions):
++    stats = {"inserted": 0, "updated": 0, "closed": 0, "unchanged": 0}
++    for a in actions:
++        op = a["op"]
++        if op == "insert":
++            stats["inserted"] += 1
++        elif op == "update":
++            stats["updated"] += 1
++        elif op == "close":
++            stats["closed"] += 1
++        else:
++            stats["unchanged"] += 1
++    return stats
++
++
++def status_aligned_to_active_flag(current_status, active: bool) -> str:
++    cur = str(current_status or "").strip()
++    if active:
++        return cur if cur == "Active/In-Service" else "Active/In-Service"
++    if cur and cur != "Active/In-Service":
++        return cur
++    return "Off-Lease"
+diff --git a/script/vcf_assignment_closeout_test.py b/script/vcf_assignment_closeout_test.py
+new file mode 100644
+index 0000000..be98a9e
+--- /dev/null
++++ b/script/vcf_assignment_closeout_test.py
+@@ -0,0 +1,108 @@
++"""Run: python3 script/vcf_assignment_closeout_test.py"""
++
++from vcf_assignment_closeout import (
++    closeout_stats,
++    open_period_match_key,
++    plan_vcf_assignment_closeout,
++    skip_vcf_assignment_writes,
++    strip_manual_protected_railcar_fields,
++)
++
++
++def hist(**partial):
++    row = {
++        "rider_external_id": "EA1739",
++        "assignment_label": "EA1739 - xKBX",
++        "start_date": "2026-07-21",
++        "end_date": None,
++        "active": True,
++        "comment": None,
++        "assignment_id_ext": None,
++        "moved_at": "2026-08-13T00:00:00.000Z",
++        "moved_by": "vcf-import",
++        "reason": "V_VALID_CARS assignment period",
++    }
++    row.update(partial)
++    return row
++
++
++passed = 0
++failed = 0
++
++
++def ok(cond, label):
++    global passed, failed
++    if cond:
++        passed += 1
++    else:
++        failed += 1
++        print("FAIL", label)
++
++
++ok(skip_vcf_assignment_writes({"active_source": "manual", "active": True}), "manual skips AH")
++ok(skip_vcf_assignment_writes({"active_source": "auto", "active": False}), "inactive skips AH")
++ok(not skip_vcf_assignment_writes({"active_source": "auto", "active": True}), "active auto writes AH")
++
++stripped = strip_manual_protected_railcar_fields(
++    {
++        "active": True,
++        "active_status": "Active",
++        "status": "Active/In-Service",
++        "active_source": "auto",
++        "lessee_name": "KBX",
++    }
++)
++ok(stripped["lessee_name"] == "KBX", "strip keeps lessee")
++ok("active" not in stripped, "strip drops active")
++ok("status" not in stripped, "strip drops status")
++
++ok(
++    open_period_match_key(1, "EA1739", "2026-07-21")
++    == open_period_match_key(1, "EA1739", "2026-07-21"),
++    "match key equal",
++)
++ok(
++    open_period_match_key(1, "EA1739", "2026-07-21")
++    != open_period_match_key(1, "OL1739", "2026-07-21"),
++    "EA !== OL",
++)
++
++actions = plan_vcf_assignment_closeout(
++    [
++        hist(id=32, assignment_id_ext=None, railcar_id=15516),
++        hist(id=41074, assignment_id_ext="558", railcar_id=15516),
++    ],
++    [hist(assignment_id_ext="558", railcar_id=15516)],
++)
++stats = closeout_stats(actions)
++ok(stats["closed"] == 1, "closes null-id sibling")
++ok(stats["inserted"] == 0, "does not insert a third open")
++ok(
++    any(a["op"] == "unchanged" and a["existing_id"] == 41074 for a in actions)
++    or any(a["op"] == "update" and a["existing_id"] == 41074 for a in actions),
++    "keeps filled ASSIGNMENT_ID row",
++)
++close = next(a for a in actions if a["op"] == "close")
++ok(close["existing_id"] == 32, "closes id 32")
++ok(close["end_date"] == "2026-07-21", "close end = start")
++
++incoming = hist(assignment_id_ext="558", railcar_id=15516)
++actions = plan_vcf_assignment_closeout([{"id": 41074, **incoming}], [incoming])
++stats = closeout_stats(actions)
++ok(
++    stats == {"inserted": 0, "updated": 0, "closed": 0, "unchanged": 1},
++    "re-run is no-op",
++)
++
++actions = plan_vcf_assignment_closeout(
++    [hist(id=10, rider_external_id="OL1739", railcar_id=1)],
++    [hist(rider_external_id="EA1739", start_date="2026-07-21", railcar_id=1, assignment_id_ext="558")],
++)
++stats = closeout_stats(actions)
++ok(stats["closed"] == 1, "closes old OL period")
++ok(stats["inserted"] == 1, "inserts EA period")
++close = next(a for a in actions if a["op"] == "close")
++ok(close["end_date"] == "2026-07-21", "changed close uses incoming start")
++
++print(f"{passed} passed, {failed} failed")
++raise SystemExit(1 if failed else 0)
+diff --git a/script/vcf_monthly_import.py b/script/vcf_monthly_import.py
+index 72baf1b..712a748 100644
+--- a/script/vcf_monthly_import.py
++++ b/script/vcf_monthly_import.py
+@@ -2,12 +2,16 @@
+ Monthly / repeatable VCF import (§2.1 step 5) — idempotent upserts.
+ 
+ Natural keys:
+-  assignment_history: railcar_id + ASSIGNMENT_ID + start_date
+-    (start_date required — VCF reuses ASSIGNMENT_ID across renewals)
++  assignment_history open period: railcar_id + rider + start_date
++    (null ASSIGNMENT_ID and a later filled id are the same period)
++  assignment_history closed period: railcar_id + ASSIGNMENT_ID + start_date + end_date
+   car_number_history: railcar_id + old/new initials+numbers + changed_at::date
+   railcars: car_initial + car_number (update in place; insert if new)
+ 
++Honors active_source=manual (does not overwrite active/status/active_status
++and does not write assignment_history for manual or already-inactive cars).
+ Does NOT delete existing history rows that are absent from the file.
++Does NOT write railcar_assignments / current_assignment_id.
+ Requires --confirm-production-import.
+ """
+ from __future__ import annotations
+@@ -34,6 +38,12 @@ from vcf_commit import (  # noqa: E402
+     railcar_payload,
+     s,
+ )
++from vcf_assignment_closeout import (  # noqa: E402
++    plan_vcf_assignment_closeout,
++    skip_vcf_assignment_writes,
++    status_aligned_to_active_flag,
++    strip_manual_protected_railcar_fields,
++)
+ 
+ for line in (ROOT / ".env.local").read_text(encoding="cp1252", errors="replace").splitlines():
+     line = line.strip()
+@@ -297,7 +307,7 @@ def main():
+         "railcars",
+         "id,car_initial,car_number,reporting_marks,car_type,mechanical_designation,"
+         "general_description,lease_type,managed,managed_category,lining_material,entity,"
+-        "active,active_status,rider_external_id,lessee_name,assignment_label,"
++        "active,active_status,active_source,rider_external_id,lessee_name,assignment_label,"
+         "lease_start_date,lease_end_date,lease_expiry,dot_code,dot_specification,"
+         "comment_event_note,legacy_valid_car_id,client_id,cover_sheet,legal_owner,"
+         "update_made,update_needed_next_vcf,current_assignment_id,data_source,status",
+@@ -348,16 +358,9 @@ def main():
+         "id,railcar_id,assignment_id_ext,start_date,end_date,rider_external_id,"
+         "assignment_label,active,comment,reason",
+     )
+-    ah_by_key: dict[str, list] = defaultdict(list)
++    ah_by_railcar: dict[int, list] = defaultdict(list)
+     for r in existing_ah:
+-        ah_by_key[
+-            ah_key(
+-                r["railcar_id"],
+-                r.get("assignment_id_ext"),
+-                r.get("start_date"),
+-                r.get("end_date"),
+-            )
+-        ].append(r)
++        ah_by_railcar[r["railcar_id"]].append(r)
+ 
+     existing_cnh = fetch_all(
+         sb,
+@@ -375,6 +378,8 @@ def main():
+         "ah_inserted": 0,
+         "ah_updated": 0,
+         "ah_unchanged": 0,
++        "ah_closed": 0,
++        "ah_skipped": 0,
+         "cnh_inserted": 0,
+         "cnh_updated": 0,
+         "cnh_unchanged": 0,
+@@ -395,6 +400,19 @@ def main():
+             update_payload = dict(payload)
+             if existing_row.get("entity") == update_payload.get("entity"):
+                 update_payload.pop("entity", None)
++            # Urgent: Python must honor active_source=manual the same way the API does.
++            if str(existing_row.get("active_source") or "").strip() == "manual":
++                update_payload = strip_manual_protected_railcar_fields(update_payload)
++            else:
++                if isinstance(update_payload.get("active"), bool):
++                    update_payload["status"] = status_aligned_to_active_flag(
++                        existing_row.get("status"),
++                        update_payload["active"],
++                    )
++                    update_payload["active_status"] = (
++                        "Active" if update_payload["active"] else "Inactive"
++                    )
++                    update_payload["active_source"] = "auto"
+             if railcar_content_equal(existing_row, update_payload):
+                 stats["railcars_unchanged"] += 1
+             else:
+@@ -405,10 +423,19 @@ def main():
+                 stats["touched_railcar_ids"].add(existing_id)
+             rid = existing_id
+         else:
++            insert_payload = dict(payload)
++            if isinstance(insert_payload.get("active"), bool):
++                insert_payload["status"] = status_aligned_to_active_flag(
++                    None, insert_payload["active"]
++                )
++                insert_payload["active_status"] = (
++                    "Active" if insert_payload["active"] else "Inactive"
++                )
++                insert_payload["active_source"] = "auto"
+             if write:
+-                new_id = safe_insert(sb, "railcars", payload)
++                new_id = safe_insert(sb, "railcars", insert_payload)
+                 id_by_key[key] = new_id
+-                car_by_id[new_id] = {"id": new_id, **payload}
++                car_by_id[new_id] = {"id": new_id, **insert_payload}
+                 rid = new_id
+             else:
+                 rid = None
+@@ -419,59 +446,80 @@ def main():
+         if rid is None:
+             continue
+ 
+-        for p in c["periods"]:
+-            start = None if p["start_date_unknown"] else p.get("start_date")
+-            end = (
+-                None
+-                if p["end_date_unknown"] or p["end_date_indefinite"]
+-                else p.get("end_date")
+-            )
+-            hist = {
+-                "railcar_id": rid,
+-                "rider_external_id": p.get("rider_external_id"),
+-                "assignment_label": p.get("assignment_label"),
+-                "start_date": start,
+-                "end_date": end,
+-                "active": p["active"] if p["active_ok"] else None,
+-                "comment": p.get("comment"),
+-                "assignment_id_ext": p.get("assignment_id"),
+-                "moved_by": "vcf-import",
+-                "reason": "V_VALID_CARS assignment period",
+-            }
+-            k = ah_key(
+-                rid,
+-                hist["assignment_id_ext"],
+-                hist["start_date"],
+-                hist["end_date"],
+-            )
+-            existing_rows = ah_by_key.get(k) or []
+-            match = next((ex for ex in existing_rows if content_equal_ah(ex, hist)), None)
+-            if match:
+-                stats["ah_unchanged"] += 1
+-            elif existing_rows:
+-                # Update the first existing row for this natural key
+-                ex = existing_rows[0]
+-                if write:
+-                    safe_update(
+-                        sb,
+-                        "assignment_history",
+-                        {**hist, "moved_at": now_iso},
+-                        ex["id"],
+-                    )
+-                    existing_rows[0] = {**ex, **hist}
+-                stats["ah_updated"] += 1
+-                stats["touched_railcar_ids"].add(rid)
+-            else:
+-                if write:
+-                    new_id = safe_insert(
+-                        sb,
+-                        "assignment_history",
+-                        {**hist, "moved_at": now_iso},
+-                    )
+-                    ah_by_key[k] = [{"id": new_id, **hist}]
+-                stats["ah_inserted"] += 1
+-                stats["touched_railcar_ids"].add(rid)
++        # Phase 1 close-out. Skip assignment_history for remark-retired / inactive
++        # using the car's state *before* this run (do not revive a just-inactivated row).
++        skip_history = (
++            skip_vcf_assignment_writes(existing_row)
++            if existing_id
++            else False
++        )
++        if skip_history:
++            stats["ah_skipped"] += len(c["periods"])
++        else:
++            incoming = []
++            for p in c["periods"]:
++                start = None if p["start_date_unknown"] else p.get("start_date")
++                end = (
++                    None
++                    if p["end_date_unknown"] or p["end_date_indefinite"]
++                    else p.get("end_date")
++                )
++                incoming.append(
++                    {
++                        "railcar_id": rid,
++                        "rider_external_id": p.get("rider_external_id"),
++                        "assignment_label": p.get("assignment_label"),
++                        "start_date": start,
++                        "end_date": end,
++                        "active": p["active"] if p["active_ok"] else None,
++                        "comment": p.get("comment"),
++                        "assignment_id_ext": p.get("assignment_id"),
++                        "moved_by": "vcf-import",
++                        "reason": "V_VALID_CARS assignment period",
++                    }
++                )
++            existing_rows = list(ah_by_railcar.get(rid) or [])
++            actions = plan_vcf_assignment_closeout(existing_rows, incoming)
++            by_id = {r["id"]: r for r in existing_rows}
++            for action in actions:
++                op = action["op"]
++                if op == "unchanged":
++                    stats["ah_unchanged"] += 1
++                    continue
++                if op == "update":
++                    payload_h = {**action["payload"], "moved_at": now_iso}
++                    if write:
++                        safe_update(sb, "assignment_history", payload_h, action["existing_id"])
++                        by_id[action["existing_id"]] = {
++                            **by_id.get(action["existing_id"], {}),
++                            **payload_h,
++                            "id": action["existing_id"],
++                        }
++                    stats["ah_updated"] += 1
++                    stats["touched_railcar_ids"].add(rid)
++                elif op == "insert":
++                    payload_h = {**action["payload"], "moved_at": now_iso}
++                    if write:
++                        new_id = safe_insert(sb, "assignment_history", payload_h)
++                        by_id[new_id] = {"id": new_id, **payload_h}
++                    stats["ah_inserted"] += 1
++                    stats["touched_railcar_ids"].add(rid)
++                elif op == "close":
++                    payload_h = {
++                        "end_date": action["end_date"],
++                        "active": False,
++                        "comment": action["comment"],
++                        "moved_at": now_iso,
++                    }
++                    if write:
++                        safe_update(sb, "assignment_history", payload_h, action["existing_id"])
++                        prev = by_id.get(action["existing_id"], {})
++                        by_id[action["existing_id"]] = {**prev, **payload_h, "id": action["existing_id"]}
++                    stats["ah_closed"] += 1
++                    stats["touched_railcar_ids"].add(rid)
++            ah_by_railcar[rid] = list(by_id.values())
+ 
++        for p in c["periods"]:
+             if p.get("old_car_initial") or p.get("old_car_number"):
+                 changed = (
+                     f"{p['start_date']}T00:00:00.000Z"
+@@ -533,9 +581,10 @@ def main():
+             **{k: (len(v) if isinstance(v, set) else v) for k, v in stats.items()},
+         },
+         "naturalKeyNote": (
+-            "assignment_history upsert key = railcar_id + ASSIGNMENT_ID + start_date + end_date. "
+-            "ASSIGNMENT_ID alone is not unique in V_VALID_CARS (renewals reuse it). "
+-            "ACTIVE is excluded from the key so MoM ACTIVE flips update the period in place."
++            "Open assignment_history periods match on railcar_id + rider + start_date "
++            "(null vs filled ASSIGNMENT_ID is the same period). Closed periods still "
++            "upsert on railcar_id + ASSIGNMENT_ID + start_date + end_date. "
++            "active_source=manual and already-inactive cars skip assignment_history writes."
+         ),
+         "touched_railcar_id_list": sorted(stats["touched_railcar_ids"]),
+     }
+diff --git a/server/routes.ts b/server/routes.ts
+index 044242e..e0cbbac 100644
+--- a/server/routes.ts
++++ b/server/routes.ts
+@@ -135,12 +135,17 @@ import {
+ import {
+   buildVcfReview,
+   railcarPayloadFromCurrent,
+-  assignmentHistoryNaturalKey,
+   assignmentHistoryPayloadFromPeriod,
+-  assignmentHistoryContentEqual,
+   carNumberHistoryNaturalKey,
+   carNumberHistoryPayloadFromPeriod,
+ } from "@shared/vcf-import";
++import {
++  closeoutClosePatch,
++  closeoutStats,
++  planVcfAssignmentCloseout,
++  skipVcfAssignmentWrites,
++  type ExistingHistoryRow,
++} from "@shared/vcf-assignment-closeout";
+ import {
+   deriveFleetStatus,
+   isOperatingFleetCar,
+@@ -2940,11 +2945,12 @@ export async function registerRoutes(
+ 
+   // VCF commit — gated. Requires confirmProductionImport === true after Bruce review.
+   // Not used for the non-prod gate run; kept ready for the signed-off production load.
+-  // Do-not-touch: accounts.account_manager, riders.account_manager (deprecated).
+-  // VCF writes railcars + assignment_history + car_number_history. It does not
+-  // insert riders or accounts. Post-commit expiration sync may patch
+-  // riders.expiration_date / effective_date only.
+-  // See docs/IMPORT_WRITE_BOUNDARIES.md.
++  // Do-not-touch: accounts.account_manager, riders.account_manager (deprecated),
++  // railcar_assignments, railcars.current_assignment_id (Phase 2).
++  // VCF writes railcars + assignment_history + car_number_history. Open history
++  // periods match car+rider+start (null vs filled ASSIGNMENT_ID is the same
++  // period). Manual / already-inactive cars skip assignment_history writes.
++  // See docs/IMPORT_WRITE_BOUNDARIES.md and docs/VCF_CLOSEOUT_PHASE1.md.
+   app.post("/api/import/vcf/commit", async (req: Request, res: Response) => {
+     try {
+       const writerId = await requireWrite(req, res);
+@@ -2986,36 +2992,33 @@ export async function registerRoutes(
+       let assignmentInserted = 0;
+       let assignmentUpdated = 0;
+       let assignmentUnchanged = 0;
++      let assignmentClosed = 0;
++      let assignmentSkipped = 0;
+       let remarkHistory = 0;
+       let remarkInserted = 0;
+       let remarkUpdated = 0;
+       let remarkUnchanged = 0;
+       const movedAt = new Date().toISOString();
+ 
+-      // Prefetch existing VCF history for idempotent upsert (car + ASSIGNMENT_ID + start_date)
+-      const ahByKey = new Map<string, any>();
++      // Prefetch all assignment_history so close-out can see open periods
++      // regardless of moved_by (null ASSIGNMENT_ID twins, remark copies, etc.).
++      const ahByRailcar = new Map<number, ExistingHistoryRow[]>();
+       {
+         let from = 0;
+         for (;;) {
+           const { data, error } = await supabase
+             .from("assignment_history")
+             .select(
+-              "id, railcar_id, assignment_id_ext, start_date, end_date, rider_external_id, assignment_label, active, comment, reason"
++              "id, railcar_id, assignment_id_ext, start_date, end_date, rider_external_id, assignment_label, active, comment, reason, moved_at, moved_by"
+             )
+-            .eq("moved_by", "vcf-import")
+             .range(from, from + 999);
+           if (error) throw error;
+           const chunk = data ?? [];
+           for (const r of chunk) {
+-            ahByKey.set(
+-              assignmentHistoryNaturalKey(
+-                r.railcar_id,
+-                r.assignment_id_ext,
+-                r.start_date,
+-                r.end_date
+-              ),
+-              r
+-            );
++            const rid = Number(r.railcar_id);
++            const list = ahByRailcar.get(rid) ?? [];
++            list.push(r as ExistingHistoryRow);
++            ahByRailcar.set(rid, list);
+           }
+           if (chunk.length < 1000) break;
+           from += 1000;
+@@ -3060,13 +3063,15 @@ export async function registerRoutes(
+           });
+           const existingId = keyToId.get(car.carKey);
+           let railcarId = existingId;
++          let existingCar: { entity?: string | null; fleet_status_source?: string | null; active_source?: string | null; active?: boolean | null; status?: string | null } | null = null;
+           if (existingId) {
+             // Skip entity in update when unchanged so the old managed_category trigger doesn't fire
+-            const { data: existingCar } = await supabase
++            const existingCarRes = await supabase
+               .from("railcars")
+               .select("entity, fleet_status_source, active_source, active, status")
+               .eq("id", existingId)
+               .maybeSingle();
++            existingCar = existingCarRes.data as typeof existingCar;
+             const updatePayload = { ...payload };
+             if (existingCar && (existingCar as any).entity === payload.entity) {
+               delete (updatePayload as any).entity;
+@@ -3106,88 +3111,6 @@ export async function registerRoutes(
+             const { error } = await supabase.from("railcars").update(updatePayload).eq("id", existingId);
+             if (error) throw error;
+             updated += 1;
+-
+-            // Idempotent assignment_history upsert — natural key car + ASSIGNMENT_ID + start_date
+-            // (Do NOT delete-all / blind-insert; monthly re-runs must not double rows.)
+-            const protectedActive =
+-              activeManual ? ((existingCar as any).active === true) : null;
+-            for (const p of car.periods) {
+-              const hist = assignmentHistoryPayloadFromPeriod(railcarId!, p, movedAt);
+-              // Only the open-ended (current) period feeds export "current" ACTIVE;
+-              // keep it aligned with guarded railcars.active. Closed periods keep file ACTIVE.
+-              if (protectedActive != null && hist.end_date == null) {
+-                hist.active = protectedActive;
+-              }
+-              const key = assignmentHistoryNaturalKey(
+-                hist.railcar_id,
+-                hist.assignment_id_ext,
+-                hist.start_date,
+-                hist.end_date
+-              );
+-              const existing = ahByKey.get(key);
+-              if (existing) {
+-                if (assignmentHistoryContentEqual(existing, hist)) {
+-                  assignmentUnchanged += 1;
+-                } else {
+-                  const { error } = await supabase
+-                    .from("assignment_history")
+-                    .update(hist)
+-                    .eq("id", existing.id);
+-                  if (error) throw error;
+-                  ahByKey.set(key, { ...existing, ...hist });
+-                  assignmentUpdated += 1;
+-                }
+-              } else {
+-                const { data: ins, error } = await supabase
+-                  .from("assignment_history")
+-                  .insert(hist)
+-                  .select("id")
+-                  .single();
+-                if (error) throw error;
+-                ahByKey.set(key, { id: ins!.id, ...hist });
+-                assignmentInserted += 1;
+-              }
+-              assignmentPeriods += 1;
+-            }
+-
+-            // After import, re-assert current open AH.active for manual cars (export SoT).
+-            if (activeManual) {
+-              await syncCurrentAssignmentHistoryActive(
+-                existingId,
+-                (existingCar as any).active === true,
+-              );
+-            }
+-
+-            // Idempotent car_number_history upsert — remark natural key
+-            for (const p of car.periods) {
+-              const remark = carNumberHistoryPayloadFromPeriod(railcarId!, p, movedAt);
+-              if (!remark) continue;
+-              const key = carNumberHistoryNaturalKey({
+-                railcarId: remark.railcar_id,
+-                old_car_initial: remark.old_car_initial,
+-                old_car_number: remark.old_car_number,
+-                new_car_initial: remark.new_car_initial,
+-                new_car_number: remark.new_car_number,
+-                changed_at: remark.changed_at,
+-              });
+-              const existing = cnhByKey.get(key);
+-              if (existing) {
+-                remarkUnchanged += 1;
+-                remarkHistory += 1;
+-                continue;
+-              }
+-              const { data: ins, error } = await supabase
+-                .from("car_number_history")
+-                .insert(remark)
+-                .select("id")
+-                .single();
+-              if (error) throw error;
+-              cnhByKey.set(key, { id: ins!.id, ...remark });
+-              remarkInserted += 1;
+-              remarkHistory += 1;
+-            }
+-            historyRows += 1;
+-            continue; // skip the shared AH/CNH loops below for this car
+           } else {
+             const insertPayload = {
+               ...payload,
+@@ -3209,40 +3132,53 @@ export async function registerRoutes(
+             inserted += 1;
+           }
+ 
+-          // Idempotent assignment_history upsert — natural key car + ASSIGNMENT_ID + start_date
+-          // (Do NOT delete-all / blind-insert; monthly re-runs must not double rows.)
+-          for (const p of car.periods) {
+-            const hist = assignmentHistoryPayloadFromPeriod(railcarId!, p, movedAt);
+-            const key = assignmentHistoryNaturalKey(
+-              hist.railcar_id,
+-              hist.assignment_id_ext,
+-              hist.start_date,
+-              hist.end_date
++          // Phase 1 close-out: same open period = car + rider + start (null vs filled
++          // ASSIGNMENT_ID is the same period). Skip retired/inactive cars entirely.
++          // Does not write railcar_assignments / current_assignment_id.
++          const skipHistory = skipVcfAssignmentWrites({
++            active_source: existingId ? existingCar?.active_source : "auto",
++            active: existingId ? existingCar?.active : true,
++          });
++          if (skipHistory) {
++            assignmentSkipped += car.periods.length;
++          } else {
++            const incoming = car.periods.map((p) =>
++              assignmentHistoryPayloadFromPeriod(railcarId!, p, movedAt),
+             );
+-            const existing = ahByKey.get(key);
+-            if (existing) {
+-              if (assignmentHistoryContentEqual(existing, hist)) {
+-                assignmentUnchanged += 1;
+-              } else {
++            const existingRows = ahByRailcar.get(railcarId!) ?? [];
++            const actions = planVcfAssignmentCloseout({ existingRows, incoming });
++            const planned = closeoutStats(actions);
++            for (const action of actions) {
++              if (action.op === "unchanged") continue;
++              if (action.op === "update") {
++                const { error } = await supabase
++                  .from("assignment_history")
++                  .update(action.payload)
++                  .eq("id", action.existingId);
++                if (error) throw error;
++              } else if (action.op === "insert") {
++                const { data: ins, error } = await supabase
++                  .from("assignment_history")
++                  .insert(action.payload)
++                  .select("id")
++                  .single();
++                if (error) throw error;
++                const next = ahByRailcar.get(railcarId!) ?? [];
++                next.push({ id: ins!.id, ...action.payload });
++                ahByRailcar.set(railcarId!, next);
++              } else if (action.op === "close") {
+                 const { error } = await supabase
+                   .from("assignment_history")
+-                  .update(hist)
+-                  .eq("id", existing.id);
++                  .update(closeoutClosePatch(action, movedAt))
++                  .eq("id", action.existingId);
+                 if (error) throw error;
+-                ahByKey.set(key, { ...existing, ...hist });
+-                assignmentUpdated += 1;
+               }
+-            } else {
+-              const { data: ins, error } = await supabase
+-                .from("assignment_history")
+-                .insert(hist)
+-                .select("id")
+-                .single();
+-              if (error) throw error;
+-              ahByKey.set(key, { id: ins!.id, ...hist });
+-              assignmentInserted += 1;
+             }
+-            assignmentPeriods += 1;
++            assignmentInserted += planned.inserted;
++            assignmentUpdated += planned.updated;
++            assignmentUnchanged += planned.unchanged;
++            assignmentClosed += planned.closed;
++            assignmentPeriods += car.periods.length;
+           }
+ 
+           // Idempotent car_number_history upsert — remark natural key
+@@ -3295,6 +3231,8 @@ export async function registerRoutes(
+         assignmentInserted,
+         assignmentUpdated,
+         assignmentUnchanged,
++        assignmentClosed,
++        assignmentSkipped,
+         remarkHistory,
+         remarkInserted,
+         remarkUpdated,
+diff --git a/shared/vcf-assignment-closeout.test.ts b/shared/vcf-assignment-closeout.test.ts
+new file mode 100644
+index 0000000..e760e41
+--- /dev/null
++++ b/shared/vcf-assignment-closeout.test.ts
+@@ -0,0 +1,147 @@
++/* eslint-disable no-console */
++/** Run: npx tsx shared/vcf-assignment-closeout.test.ts */
++
++import {
++  closeoutStats,
++  openPeriodMatchKey,
++  planVcfAssignmentCloseout,
++  skipVcfAssignmentWrites,
++  stripManualProtectedRailcarFields,
++} from "./vcf-assignment-closeout";
++import type { AssignmentHistoryPeriodPayload } from "./vcf-import";
++
++let passed = 0;
++let failed = 0;
++
++function ok(cond: boolean, label: string) {
++  if (cond) passed += 1;
++  else {
++    failed += 1;
++    console.error("FAIL", label);
++  }
++}
++
++function hist(
++  partial: Partial<AssignmentHistoryPeriodPayload> & { railcar_id: number },
++): AssignmentHistoryPeriodPayload {
++  return {
++    rider_external_id: "EA1739",
++    assignment_label: "EA1739 - xKBX",
++    start_date: "2026-07-21",
++    end_date: null,
++    active: true,
++    comment: null,
++    assignment_id_ext: null,
++    moved_at: "2026-08-13T00:00:00.000Z",
++    moved_by: "vcf-import",
++    reason: "V_VALID_CARS assignment period",
++    ...partial,
++  };
++}
++
++ok(skipVcfAssignmentWrites({ active_source: "manual", active: true }), "manual skips AH");
++ok(skipVcfAssignmentWrites({ active_source: "auto", active: false }), "inactive skips AH");
++ok(!skipVcfAssignmentWrites({ active_source: "auto", active: true }), "active auto writes AH");
++
++const stripped = stripManualProtectedRailcarFields({
++  active: true,
++  active_status: "Active",
++  status: "Active/In-Service",
++  active_source: "auto",
++  lessee_name: "KBX",
++});
++ok(stripped.lessee_name === "KBX", "strip keeps lessee");
++ok(stripped.active === undefined, "strip drops active");
++ok(stripped.status === undefined, "strip drops status");
++
++ok(
++  openPeriodMatchKey(1, "EA1739", "2026-07-21") ===
++    openPeriodMatchKey(1, "EA1739", "2026-07-21"),
++  "match key equal",
++);
++ok(
++  openPeriodMatchKey(1, "EA1739", "2026-07-21") !==
++    openPeriodMatchKey(1, "OL1739", "2026-07-21"),
++  "EA !== OL",
++);
++
++// 118-car bug: null id vs filled id, same rider+start → update keep, close sibling
++{
++  const actions = planVcfAssignmentCloseout({
++    existingRows: [
++      { id: 32, ...hist({ assignment_id_ext: null, railcar_id: 15516 }) },
++      { id: 41074, ...hist({ assignment_id_ext: "558", railcar_id: 15516 }) },
++    ],
++    incoming: [hist({ assignment_id_ext: "558", railcar_id: 15516 })],
++  });
++  const stats = closeoutStats(actions);
++  ok(stats.closed === 1, "closes null-id sibling");
++  ok(stats.inserted === 0, "does not insert a third open");
++  ok(
++    actions.some((a) => a.op === "unchanged" && a.existingId === 41074) ||
++      actions.some((a) => a.op === "update" && a.existingId === 41074),
++    "keeps filled ASSIGNMENT_ID row",
++  );
++  const close = actions.find((a) => a.op === "close");
++  ok(close?.op === "close" && close.existingId === 32, "closes id 32");
++  ok(close?.op === "close" && close.end_date === "2026-07-21", "close end = start");
++}
++
++// Re-run after collapse: one open, same content → unchanged, no insert
++{
++  const incoming = hist({ assignment_id_ext: "558", railcar_id: 15516 });
++  const actions = planVcfAssignmentCloseout({
++    existingRows: [{ id: 41074, ...incoming }],
++    incoming: [incoming],
++  });
++  const stats = closeoutStats(actions);
++  ok(stats.unchanged === 1 && stats.inserted === 0 && stats.closed === 0 && stats.updated === 0, "re-run is no-op");
++}
++
++// Changed rider: close old at incoming start, insert new
++{
++  const actions = planVcfAssignmentCloseout({
++    existingRows: [{ id: 10, ...hist({ rider_external_id: "OL1739", railcar_id: 1 }) }],
++    incoming: [hist({ rider_external_id: "EA1739", start_date: "2026-07-21", railcar_id: 1, assignment_id_ext: "558" })],
++  });
++  const stats = closeoutStats(actions);
++  ok(stats.closed === 1, "closes old OL period");
++  ok(stats.inserted === 1, "inserts EA period");
++  const close = actions.find((a) => a.op === "close");
++  ok(close?.op === "close" && close.end_date === "2026-07-21", "changed close uses incoming start");
++}
++
++// Closed historical period upserts on full natural key
++{
++  const closed = hist({
++    railcar_id: 1,
++    rider_external_id: "OL1739",
++    start_date: "2020-10-01",
++    end_date: "2026-07-21",
++    active: false,
++    assignment_id_ext: "503",
++  });
++  const first = planVcfAssignmentCloseout({ existingRows: [], incoming: [closed] });
++  ok(first.filter((a) => a.op === "insert").length === 1, "closed period inserts once");
++  const again = planVcfAssignmentCloseout({
++    existingRows: [{ id: 99, ...closed }],
++    incoming: [closed],
++  });
++  ok(closeoutStats(again).unchanged === 1, "closed period re-run unchanged");
++}
++
++// Two incoming opens (different rider+start): keep both, close unmatched existing
++{
++  const incomingA = hist({ rider_external_id: "EA1739", start_date: "2026-07-21", railcar_id: 1, assignment_id_ext: "558" });
++  const incomingB = hist({ rider_external_id: "EA1816", start_date: "2026-08-01", railcar_id: 1, assignment_id_ext: "559" });
++  const actions = planVcfAssignmentCloseout({
++    existingRows: [{ id: 10, ...hist({ rider_external_id: "OL1739", start_date: "2020-01-01", railcar_id: 1 }) }],
++    incoming: [incomingA, incomingB],
++  });
++  const stats = closeoutStats(actions);
++  ok(stats.inserted === 2, "inserts both incoming opens");
++  ok(stats.closed === 1, "closes unmatched existing open");
++}
++
++console.log(`${passed} passed, ${failed} failed`);
++if (failed) process.exit(1);
+diff --git a/shared/vcf-assignment-closeout.ts b/shared/vcf-assignment-closeout.ts
+new file mode 100644
+index 0000000..487a2b6
+--- /dev/null
++++ b/shared/vcf-assignment-closeout.ts
+@@ -0,0 +1,237 @@
++/**
++ * VCF assignment-history close-out (Phase 1).
++ *
++ * Same open period = same railcar + rider_external_id + start_date.
++ * A null assignment_id_ext and a later filled id are the same period.
++ * Does not write railcar_assignments (Phase 2, not approved).
++ */
++
++import {
++  assignmentHistoryContentEqual,
++  assignmentHistoryNaturalKey,
++  type AssignmentHistoryPeriodPayload,
++} from "./vcf-import";
++
++export type ExistingHistoryRow = AssignmentHistoryPeriodPayload & {
++  id: number;
++};
++
++export type CloseoutAction =
++  | { op: "unchanged"; existingId: number }
++  | { op: "update"; existingId: number; payload: AssignmentHistoryPeriodPayload }
++  | { op: "insert"; payload: AssignmentHistoryPeriodPayload }
++  | { op: "close"; existingId: number; end_date: string | null; comment: string };
++
++export const CLOSE_DUP =
++  "VCF close-out: collapsed duplicate open period (same rider+start)";
++export const CLOSE_CHANGED =
++  "VCF close-out: period changed; closed at incoming start";
++
++export function openPeriodMatchKey(
++  railcarId: number,
++  riderExternalId: string | null | undefined,
++  startDate: string | null | undefined,
++): string {
++  return `${railcarId}|${String(riderExternalId ?? "").trim()}|${String(startDate ?? "").trim()}`;
++}
++
++/** Skip assignment_history writes for remark-retired or already-inactive cars. */
++export function skipVcfAssignmentWrites(car: {
++  active_source?: string | null;
++  active?: boolean | null;
++}): boolean {
++  if (String(car.active_source ?? "").trim() === "manual") return true;
++  return car.active !== true;
++}
++
++/** Fields VCF must not write when active_source = manual. */
++export const VCF_MANUAL_PROTECTED_RAILCAR_FIELDS = [
++  "active",
++  "active_status",
++  "status",
++  "active_source",
++] as const;
++
++export function stripManualProtectedRailcarFields(
++  payload: Record<string, unknown>,
++): Record<string, unknown> {
++  const out = { ...payload };
++  for (const key of VCF_MANUAL_PROTECTED_RAILCAR_FIELDS) {
++    delete out[key];
++  }
++  return out;
++}
++
++function appendComment(existing: string | null | undefined, note: string): string {
++  const cur = String(existing ?? "").trim();
++  if (!cur) return note;
++  if (cur.includes(note)) return cur;
++  return `${cur} | ${note}`;
++}
++
++function isOpen(row: { end_date?: string | null }): boolean {
++  return row.end_date == null || String(row.end_date).trim() === "";
++}
++
++function preferFilledThenLater<T extends { assignment_id_ext?: string | null; start_date?: string | null; id?: number }>(
++  a: T,
++  b: T,
++): T {
++  const aFilled = a.assignment_id_ext ? 1 : 0;
++  const bFilled = b.assignment_id_ext ? 1 : 0;
++  if (aFilled !== bFilled) return aFilled > bFilled ? a : b;
++  const cmp = String(b.start_date ?? "").localeCompare(String(a.start_date ?? ""));
++  if (cmp !== 0) return cmp > 0 ? b : a;
++  return (b.id ?? 0) > (a.id ?? 0) ? b : a;
++}
++
++/**
++ * Plan history writes for one car. Caller applies in one transaction.
++ * Incoming closed periods still upsert on the full natural key.
++ * Incoming open periods match existing opens by rider+start (not ASSIGNMENT_ID).
++ */
++export function planVcfAssignmentCloseout(args: {
++  existingRows: ExistingHistoryRow[];
++  incoming: AssignmentHistoryPeriodPayload[];
++}): CloseoutAction[] {
++  const { existingRows, incoming } = args;
++  const actions: CloseoutAction[] = [];
++  const incomingOpen = incoming.filter(isOpen);
++  const incomingClosed = incoming.filter((p) => !isOpen(p));
++  const existingOpen = existingRows.filter(isOpen);
++
++  const byNatural = new Map<string, ExistingHistoryRow>();
++  for (const row of existingRows) {
++    byNatural.set(
++      assignmentHistoryNaturalKey(
++        row.railcar_id,
++        row.assignment_id_ext,
++        row.start_date,
++        row.end_date,
++      ),
++      row,
++    );
++  }
++
++  for (const hist of incomingClosed) {
++    const key = assignmentHistoryNaturalKey(
++      hist.railcar_id,
++      hist.assignment_id_ext,
++      hist.start_date,
++      hist.end_date,
++    );
++    const existing = byNatural.get(key);
++    if (!existing) {
++      actions.push({ op: "insert", payload: hist });
++      continue;
++    }
++    if (assignmentHistoryContentEqual(existing, hist)) {
++      actions.push({ op: "unchanged", existingId: existing.id });
++    } else {
++      actions.push({ op: "update", existingId: existing.id, payload: hist });
++    }
++  }
++
++  if (incomingOpen.length === 0) return actions;
++
++  const incomingByMatch = new Map<string, AssignmentHistoryPeriodPayload>();
++  for (const hist of incomingOpen) {
++    const matchKey = openPeriodMatchKey(
++      hist.railcar_id,
++      hist.rider_external_id,
++      hist.start_date,
++    );
++    const prev = incomingByMatch.get(matchKey);
++    incomingByMatch.set(matchKey, prev ? preferFilledThenLater(prev, hist) : hist);
++  }
++
++  const latestIncomingStart =
++    [...incomingOpen]
++      .map((p) => String(p.start_date ?? ""))
++      .sort()
++      .at(-1) || null;
++
++  const claimed = new Set<number>();
++
++  for (const [matchKey, currentOpen] of incomingByMatch) {
++    const matches = existingOpen.filter(
++      (row) =>
++        !claimed.has(row.id) &&
++        openPeriodMatchKey(row.railcar_id, row.rider_external_id, row.start_date) ===
++          matchKey,
++    );
++    const keep = [...matches].sort((a, b) => {
++      const aFilled = a.assignment_id_ext ? 1 : 0;
++      const bFilled = b.assignment_id_ext ? 1 : 0;
++      if (aFilled !== bFilled) return bFilled - aFilled;
++      return (b.id ?? 0) - (a.id ?? 0);
++    })[0];
++
++    for (const row of matches) {
++      if (keep && row.id === keep.id) continue;
++      claimed.add(row.id);
++      actions.push({
++        op: "close",
++        existingId: row.id,
++        end_date: currentOpen.start_date,
++        comment: appendComment(row.comment, CLOSE_DUP),
++      });
++    }
++
++    if (keep) {
++      claimed.add(keep.id);
++      const merged: AssignmentHistoryPeriodPayload = {
++        ...currentOpen,
++        assignment_id_ext: currentOpen.assignment_id_ext || keep.assignment_id_ext,
++      };
++      if (assignmentHistoryContentEqual(keep, merged)) {
++        actions.push({ op: "unchanged", existingId: keep.id });
++      } else {
++        actions.push({ op: "update", existingId: keep.id, payload: merged });
++      }
++    } else {
++      actions.push({ op: "insert", payload: currentOpen });
++    }
++  }
++
++  for (const row of existingOpen) {
++    if (claimed.has(row.id)) continue;
++    actions.push({
++      op: "close",
++      existingId: row.id,
++      end_date: latestIncomingStart,
++      comment: appendComment(row.comment, CLOSE_CHANGED),
++    });
++  }
++
++  return actions;
++}
++
++export function closeoutStats(actions: CloseoutAction[]): {
++  inserted: number;
++  updated: number;
++  closed: number;
++  unchanged: number;
++} {
++  const stats = { inserted: 0, updated: 0, closed: 0, unchanged: 0 };
++  for (const a of actions) {
++    if (a.op === "insert") stats.inserted += 1;
++    else if (a.op === "update") stats.updated += 1;
++    else if (a.op === "close") stats.closed += 1;
++    else stats.unchanged += 1;
++  }
++  return stats;
++}
++
++/** Patch written when applying a close action. Never deletes. */
++export function closeoutClosePatch(
++  action: Extract<CloseoutAction, { op: "close" }>,
++  movedAt: string,
++): { end_date: string | null; active: false; comment: string; moved_at: string } {
++  return {
++    end_date: action.end_date,
++    active: false,
++    comment: action.comment,
++    moved_at: movedAt,
++  };
++}
+diff --git a/shared/vcf-import.ts b/shared/vcf-import.ts
+index 5ee4616..e1a0fa8 100644
+--- a/shared/vcf-import.ts
++++ b/shared/vcf-import.ts
+@@ -476,14 +476,16 @@ export function railcarPayloadFromCurrent(
+ }
+ 
+ /**
+- * Natural key for a VCF assignment-period row in assignment_history (§2.1 step 5).
++ * Natural key for a *closed* VCF assignment-period row in assignment_history.
+  *
+- * Bruce's intent: car + ASSIGNMENT_ID. In the real V_VALID_CARS file that alone is not
+- * unique — renewals reuse ASSIGNMENT_ID, and a handful of rows also share start_date
+- * while differing on end_date. Period identity is therefore:
++ * Open (current) periods are matched by railcar_id + rider + start_date in
++ * shared/vcf-assignment-closeout.ts — a null assignment_id_ext and a later
++ * filled id are the same open period. This full key is still used for closed
++ * historical rows (renewals reuse ASSIGNMENT_ID; a few also share start_date
++ * while differing on end_date):
+  *   railcar_id + ASSIGNMENT_ID + start_date + end_date
+- * ACTIVE is intentionally NOT part of the key so month-over-month ACTIVE flips update
+- * the existing period row instead of inserting a sibling.
++ * ACTIVE is intentionally NOT part of the key so month-over-month ACTIVE flips
++ * update the existing period row instead of inserting a sibling.
+  * Nulls are empty-string so the key stays stable across runs.
+  */
+ export function assignmentHistoryNaturalKey(
+-- 
+2.43.0
+
