@@ -3,6 +3,13 @@
 Bruce approved this phase on 2026-10-12, conditional on signing the 120-collapse
 preview before any data write. Phase 2 is **not** approved.
 
+**120-collapse executed 2026-10-12** (Claude, after Bruce’s “You handle”).
+Independently re-read on production the same day: 120 rows closed with comment
+`DRAFT cleanup: collapsed duplicate open period`; active multi-open cars 186→66;
+TFOX 002107 keep 41074 / close 32; 23602/23603 untouched; mismatch view 0.
+Production PR: https://github.com/RESIDCO/RLMS/pull/1 (draft). Merge + Render
+deploy still required for the Python `active_source=manual` skip to go live.
+
 This branch is on `BHarbridge/rlms-residco` because cursor[bot] cannot push to
 `RESIDCO/RLMS` (403). The production commit (against `a4ec235`) is
 `patches/0001-phase1-vcf-closeout-RESIDCO-RLMS-a4ec235.patch`. See
@@ -32,6 +39,8 @@ This branch is on `BHarbridge/rlms-residco` because cursor[bot] cannot push to
   after the 66 are resolved).
 - Close the 66 differing duplicates (need a signed per-car review table vs the
   latest Valid Car File). Query: `script/preview_differing_open_periods_66.sql`.
+  Snapshot after the 120-collapse: `script/preview_differing_open_periods_66.2026-10-12.csv`
+  (66 cars, 132 open rows; file-current columns still empty).
 - Mass-close the 38 inactive differing duplicates or the 1,748 open periods on
   inactive cars. Leave frozen.
 - Touch cars 23602 / 23603 (OFOX 32115 / 032115) in any cleanup list.
